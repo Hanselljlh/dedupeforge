@@ -569,3 +569,34 @@ fn load_action_plan_rejects_stale_saved_plan_on_execute() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn report_database_can_store_and_list_reports() {
+    let root = fixture_dir("exact-basic");
+    let report_db = std::env::temp_dir().join("dedupeforge-report-db.sqlite3");
+    let _ = std::fs::remove_file(&report_db);
+
+    let scan = Command::new(env!("CARGO_BIN_EXE_dedupeforge"))
+        .arg(root.as_os_str())
+        .arg("--report-db")
+        .arg(report_db.as_os_str())
+        .arg("--store-report-name")
+        .arg("nightly-fixture")
+        .output()
+        .unwrap();
+
+    assert!(scan.status.success());
+
+    let list = Command::new(env!("CARGO_BIN_EXE_dedupeforge"))
+        .arg("--report-db")
+        .arg(report_db.as_os_str())
+        .arg("--list-report-db")
+        .output()
+        .unwrap();
+
+    assert!(list.status.success());
+    let stdout = String::from_utf8(list.stdout).unwrap();
+    assert!(stdout.contains("nightly-fixture"));
+
+    let _ = std::fs::remove_file(report_db);
+}

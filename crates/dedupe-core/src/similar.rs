@@ -1127,6 +1127,7 @@ mod tests {
             image_rotation_invariant: false,
             media_duration_tolerance_secs: 2.0,
             media_fingerprint_distance_threshold: 32,
+            scan_archives: false,
             ignore_patterns: Vec::new(),
         }
     }

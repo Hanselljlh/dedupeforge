@@ -6,6 +6,7 @@ members = [
     "crates/dedupe-actions",
     "crates/dedupe-gui",
     "crates/dedupe-media",
+    "crates/dedupe-report-db",
 ]
 resolver = "2"
 
@@ -32,3 +33,4 @@ sha2 = "0.10"
 walkdir = "2.5"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
+zip = "2.2"

@@ -1,11 +1,12 @@
 use anyhow::{bail, Result};
 use clap::{Parser, ValueEnum};
 use dedupe_actions::{
-    build_dry_run_quarantine_plan, ensure_plan_valid, execute_quarantine_plan, load_action_plan,
+    build_dry_run_plan, ensure_plan_valid, execute_quarantine_plan, load_action_plan,
     render_human_manifest, render_human_plan, restore_from_manifest_path, save_action_plan,
-    SelectionRule,
+    ActionKind, SelectionRule,
 };
 use dedupe_core::{scan, CacheConfig, HashAlgorithm, MatchRisk, ScanConfig, ScanMode, ScanReport};
+use dedupe_report_db::ReportDb;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -80,6 +81,9 @@ struct Cli {
     media_fingerprint_distance_threshold: u32,
 
     #[arg(long, default_value_t = false)]
+    scan_archives: bool,
+
+    #[arg(long, default_value_t = false)]
     clear_cache: bool,
 
     #[arg(long, default_value_t = false)]
@@ -106,11 +110,26 @@ struct Cli {
     #[arg(long, value_enum, default_value_t = CliSelectionRule::KeepSuggested)]
     selection_rule: CliSelectionRule,
 
+    #[arg(long, value_enum, default_value_t = CliActionKind::QuarantineMove)]
+    action_type: CliActionKind,
+
     #[arg(long)]
     save_action_plan: Option<PathBuf>,
 
     #[arg(long)]
     load_action_plan: Option<PathBuf>,
+
+    #[arg(long)]
+    report_db: Option<PathBuf>,
+
+    #[arg(long)]
+    store_report_name: Option<String>,
+
+    #[arg(long, default_value_t = false)]
+    list_report_db: bool,
+
+    #[arg(long)]
+    show_report_id: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -125,6 +144,13 @@ enum CliSelectionRule {
     KeepSuggested,
     KeepNewest,
     KeepOldest,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum CliActionKind {
+    QuarantineMove,
+    HardlinkReplace,
+    SymlinkReplace,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, ValueEnum, Eq, PartialEq)]
@@ -152,6 +178,7 @@ enum ScanPreset {
     Default,
     NetworkConservative,
     NetworkTolerant,
+    NasConservative,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -176,6 +203,7 @@ struct ScanProfile {
     image_rotation_invariant: Option<bool>,
     media_duration_tolerance_secs: Option<f64>,
     media_fingerprint_distance_threshold: Option<u32>,
+    scan_archives: Option<bool>,
     output: Option<OutputFormat>,
 }
 
@@ -229,6 +257,17 @@ fn main() -> Result<()> {
     {
         bail!("--load-action-plan runs on its own and cannot be combined with scan, action-plan generation, or restore inputs");
     }
+    if (cli.list_report_db || cli.show_report_id.is_some()) && cli.report_db.is_none() {
+        bail!("--list-report-db and --show-report-id require --report-db");
+    }
+    if (cli.list_report_db || cli.show_report_id.is_some())
+        && (!cli.paths.is_empty()
+            || cli.action_plan
+            || cli.restore_manifest.is_some()
+            || cli.load_action_plan.is_some())
+    {
+        bail!("report database browse commands run on their own and cannot be combined with scan or action inputs");
+    }
 
     if let Some(manifest_path) = cli.restore_manifest.as_ref() {
         let restored = restore_from_manifest_path(manifest_path)?;
@@ -262,6 +301,37 @@ fn main() -> Result<()> {
                 OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&plan)?),
                 OutputFormat::Csv => bail!("csv output is not supported for action plans"),
             }
+        }
+        return Ok(());
+    }
+
+    if cli.list_report_db {
+        let db = ReportDb::open(cli.report_db.as_ref().unwrap())?;
+        let reports = db.list_reports()?;
+        match cli.output {
+            OutputFormat::Human => print_report_db_list(&reports),
+            OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&reports)?),
+            OutputFormat::Csv => print_report_db_csv(&reports)?,
+        }
+        return Ok(());
+    }
+
+    if let Some(report_id) = cli.show_report_id {
+        let db = ReportDb::open(cli.report_db.as_ref().unwrap())?;
+        let stored = db.load_report(report_id)?;
+        match cli.output {
+            OutputFormat::Human => {
+                println!(
+                    "Stored report {} | {} | {} | {} groups",
+                    stored.summary.id,
+                    stored.summary.name,
+                    stored.summary.mode,
+                    stored.summary.group_count
+                );
+                print_human(&stored.report);
+            }
+            OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&stored)?),
+            OutputFormat::Csv => print_csv(&stored.report)?,
         }
         return Ok(());
     }
@@ -326,6 +396,7 @@ fn main() -> Result<()> {
         media_fingerprint_distance_threshold: profile
             .media_fingerprint_distance_threshold
             .unwrap_or(cli.media_fingerprint_distance_threshold),
+        scan_archives: profile.scan_archives.unwrap_or(cli.scan_archives),
     };
 
     let cache_path = resolved_cache_path(&config.cache);
@@ -341,9 +412,27 @@ fn main() -> Result<()> {
     }
 
     let report = scan(&config)?;
+    if let Some(report_db_path) = cli.report_db.as_ref() {
+        let db = ReportDb::open(report_db_path)?;
+        let report_name = cli
+            .store_report_name
+            .clone()
+            .unwrap_or_else(|| format!("{}-scan", scan_mode_label(report.mode)));
+        let stored_id = db.store_report(&report_name, &report)?;
+        eprintln!(
+            "Stored report {} in {} as id {}",
+            report_name,
+            report_db_path.display(),
+            stored_id
+        );
+    }
 
     if cli.action_plan {
-        let plan = build_dry_run_quarantine_plan(&report, cli.selection_rule.into())?;
+        let plan = build_dry_run_plan(
+            &report,
+            cli.selection_rule.into(),
+            cli.action_type.into(),
+        )?;
         if cli.validate_action_plan {
             ensure_plan_valid(&plan)?;
         }
@@ -410,6 +499,16 @@ impl From<CliSelectionRule> for SelectionRule {
             CliSelectionRule::KeepSuggested => SelectionRule::KeepSuggested,
             CliSelectionRule::KeepNewest => SelectionRule::KeepNewest,
             CliSelectionRule::KeepOldest => SelectionRule::KeepOldest,
+        }
+    }
+}
+
+impl From<CliActionKind> for ActionKind {
+    fn from(value: CliActionKind) -> Self {
+        match value {
+            CliActionKind::QuarantineMove => ActionKind::QuarantineMove,
+            CliActionKind::HardlinkReplace => ActionKind::HardlinkReplace,
+            CliActionKind::SymlinkReplace => ActionKind::SymlinkReplace,
         }
     }
 }
@@ -499,6 +598,47 @@ fn print_csv(report: &ScanReport) -> Result<()> {
     Ok(())
 }
 
+fn print_report_db_list(reports: &[dedupe_report_db::StoredReportSummary]) {
+    println!("Stored reports: {}", reports.len());
+    for report in reports {
+        println!(
+            "  #{} | {} | mode={} | risk={} | files={} | groups={}",
+            report.id,
+            report.name,
+            report.mode,
+            report.risk,
+            report.scanned_files,
+            report.group_count
+        );
+    }
+}
+
+fn print_report_db_csv(reports: &[dedupe_report_db::StoredReportSummary]) -> Result<()> {
+    let mut writer = csv::Writer::from_writer(std::io::stdout());
+    writer.write_record([
+        "id",
+        "created_at_unix",
+        "name",
+        "mode",
+        "risk",
+        "scanned_files",
+        "group_count",
+    ])?;
+    for report in reports {
+        writer.write_record([
+            report.id.to_string(),
+            report.created_at_unix.to_string(),
+            report.name.clone(),
+            report.mode.clone(),
+            report.risk.clone(),
+            report.scanned_files.to_string(),
+            report.group_count.to_string(),
+        ])?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
 fn scan_mode_label(mode: ScanMode) -> &'static str {
     match mode {
         ScanMode::Exact => "exact",
@@ -540,6 +680,11 @@ fn apply_preset_defaults(profile: &mut ScanProfile, preset: ScanPreset) {
         ScanPreset::NetworkTolerant => {
             profile.cache.get_or_insert(true);
             profile.cache_mtime_tolerance_secs.get_or_insert(2);
+        }
+        ScanPreset::NasConservative => {
+            profile.cache.get_or_insert(true);
+            profile.cache_mtime_tolerance_secs.get_or_insert(2);
+            profile.byte_verify.get_or_insert(true);
         }
     }
 }

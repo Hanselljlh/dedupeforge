@@ -155,13 +155,13 @@ Exit criteria:
 
 Goal: power-user cleanup options.
 
-Planned:
+Implemented:
 
 - hard link replacement
 - symlink replacement
 - archive scanning
 - NAS/network conservative mode
-- scheduled scan reports
+- scheduled scan reports via recurring report-database runs
 - result database browser
 
 Exit criteria:

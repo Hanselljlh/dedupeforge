@@ -55,3 +55,12 @@ Current decision:
 - [x] RAW + JPEG pair detection.
 - [x] Similar video engine.
 - [x] Similar music/audio engine.
+
+## Advanced cleanup
+
+- [x] Hard-link replacement.
+- [x] Symlink replacement.
+- [x] Zip archive scanning.
+- [x] NAS-conservative preset.
+- [x] Report database browser.
+- [x] Scheduler-friendly stored scan reports.

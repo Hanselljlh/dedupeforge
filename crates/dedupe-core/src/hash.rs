@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::io::Cursor;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
@@ -36,6 +37,11 @@ pub fn hash_file_prefix(path: &Path, algorithm: HashAlgorithm, max_bytes: u64) -
     let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let mut reader = BufReader::with_capacity(BUF_SIZE, file);
     hash_reader(&mut reader, algorithm, Some(max_bytes))
+}
+
+pub fn hash_bytes(bytes: &[u8], algorithm: HashAlgorithm) -> Result<String> {
+    let mut cursor = Cursor::new(bytes);
+    hash_reader(&mut cursor, algorithm, None)
 }
 
 fn hash_reader<R: Read>(

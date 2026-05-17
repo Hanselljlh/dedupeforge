@@ -6,11 +6,11 @@ DedupeForge is a duplicate-file investigation tool that combines three ideas:
 - a **Czkawka-style fast backend** with modern hashes, cacheable scans, and automation-friendly design
 - a **dupeGuru-style safety model** where every duplicate group has a protected reference concept and a clear keep/delete decision
 
-The current repository is an MVP backend and CLI. It is intentionally non-destructive. It finds exact duplicate files and reports them; it does not delete, move, hard-link, or modify files yet.
+The current repository is a review-first backend, CLI, and GUI prototype. It supports reversible quarantine actions by default, plus opt-in advanced cleanup actions for hard-link and symlink replacement.
 
 ## Project status
 
-Current stage: **Phase 7 complete through video and audio**
+Current stage: **Phase 8 complete through advanced cleanup**
 
 Implemented:
 
@@ -42,13 +42,14 @@ Implemented:
 - FFmpeg/ffprobe dependency detection for media scans
 - cache-backed video and audio fingerprints
 - ignored file patterns for non-content scans
+- zip archive member scanning in exact mode
+- advanced action types for hard-link and symlink replacement
+- report database storage and browsing
+- scheduler-friendly stored scan reports via report database runs
+- NAS-conservative preset
 - GUI session/controller crate scaffold
 - `egui` desktop prototype shell
 - human, JSON, and CSV output
-
-Not implemented yet:
-
-- archive scanning
 
 ## Why this project exists
 
@@ -71,6 +72,11 @@ The long-term goal is not just to delete duplicates. The goal is to help a user 
 .
 |-- crates/
 |   |-- dedupe-core/          # reusable scan engine library
+|   |-- dedupe-cache/         # SQLite hash cache
+|   |-- dedupe-actions/       # reversible cleanup actions
+|   |-- dedupe-media/         # image/video/audio similarity helpers
+|   |-- dedupe-report-db/     # stored scan report database
+|   |-- dedupe-gui/           # GUI controller and desktop app
 |   `-- dedupe-cli/           # CLI frontend
 |-- docs/
 |   |-- product/              # vision, feature matrix, roadmap
@@ -183,6 +189,12 @@ Run similar audio matching:
 cargo run --release --bin dedupeforge -- /data/music --mode similar-audio --media-duration-tolerance-secs 2
 ```
 
+Run exact duplicate scanning inside zip archives too:
+
+```bash
+cargo run --release --bin dedupeforge -- /data/backups --scan-archives
+```
+
 Use the network-tolerant cache preset for cross-system scans:
 
 ```bash
@@ -190,6 +202,12 @@ cargo run --release --bin dedupeforge -- /data/a /data/b --preset network-tolera
 ```
 
 This preset enables cache reuse and allows small modified-time drift during cache lookup.
+
+Use the NAS-conservative preset for slower, safer repeated NAS scans:
+
+```bash
+cargo run --release --bin dedupeforge -- /nas/photos --preset nas-conservative
+```
 
 Use explicit cache controls:
 
@@ -247,10 +265,28 @@ Execute the quarantine move plan and write a manifest:
 cargo run --release --bin dedupeforge -- /data/photos --action-plan --execute-action-plan --quarantine-root .quarantine
 ```
 
+Execute an opt-in hard-link replacement plan:
+
+```bash
+cargo run --release --bin dedupeforge -- /data/photos --action-plan --action-type hardlink-replace --execute-action-plan --quarantine-root .quarantine
+```
+
 Restore files from a quarantine manifest:
 
 ```bash
 cargo run --release --bin dedupeforge -- --restore-manifest .quarantine/1234567890/manifest.json
+```
+
+Store reports in the SQLite report database:
+
+```bash
+cargo run --release --bin dedupeforge -- /data/photos --report-db reports.sqlite3 --store-report-name nightly-photos
+```
+
+List stored reports:
+
+```bash
+cargo run --release --bin dedupeforge -- --report-db reports.sqlite3 --list-report-db
 ```
 
 Cache notes:
@@ -283,14 +319,14 @@ powershell -ExecutionPolicy Bypass -File .\scripts\test-windows.ps1
 
 DedupeForge is designed around conservative cleanup.
 
-Current MVP behavior:
+Current scan behavior:
 
-- no destructive file operations exist
 - protected folders are preferred as keep candidates
 - every duplicate group gets exactly one suggested keep item
 - exact duplicate groups are based on same size plus same full hash
 - optional byte-by-byte verification can be enabled
 - zero-byte files are excluded by default through `--min-size 1`
+- zip archives can be scanned in exact mode with `--scan-archives`, and archive members are always treated as non-actionable
 
 Current action behavior:
 
@@ -301,6 +337,11 @@ Current action behavior:
 - restore from manifest is implemented
 - protected/reference paths cannot be selected for automated quarantine moves
 - the planner prevents selecting every file in a duplicate group
+- hard-link and symlink replacement are opt-in through `--action-type`
+- advanced link actions quarantine the original duplicate first so restore remains possible
+- hard-link replacement validates same-filesystem requirements before execution
+- symlink replacement validates link support before execution
+- every advanced action is logged in the batch action log
 
 See [docs/engineering/SAFETY_MODEL.md](docs/engineering/SAFETY_MODEL.md).
 
@@ -318,6 +359,7 @@ Current similarity behavior:
 - image mode can use rotation/flip-aware slower matching with `--image-rotation-invariant`
 - video and audio modes depend on `ffmpeg` and `ffprobe`, and report a clear dependency error when either is unavailable
 - video and audio matching use `--media-duration-tolerance-secs` to constrain duration drift
+- video and audio matching use `--media-fingerprint-distance-threshold` to reject weak fingerprint matches
 - RAW + JPEG pairs are detected by normalized basename matching
 - ignored noise files can be excluded with `--ignore-pattern`
 

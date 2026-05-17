@@ -33,6 +33,7 @@ pub struct GuiScanProfile {
     pub image_rotation_invariant: bool,
     pub media_duration_tolerance_secs: f64,
     pub media_fingerprint_distance_threshold: u32,
+    pub scan_archives: bool,
 }
 
 impl Default for GuiScanProfile {
@@ -58,6 +59,7 @@ impl Default for GuiScanProfile {
             image_rotation_invariant: false,
             media_duration_tolerance_secs: 2.0,
             media_fingerprint_distance_threshold: 32,
+            scan_archives: false,
         }
     }
 }
@@ -85,6 +87,7 @@ impl GuiScanProfile {
             image_rotation_invariant: self.image_rotation_invariant,
             media_duration_tolerance_secs: self.media_duration_tolerance_secs,
             media_fingerprint_distance_threshold: self.media_fingerprint_distance_threshold,
+            scan_archives: self.scan_archives,
             ignore_patterns: self.ignore_patterns.clone(),
         }
     }

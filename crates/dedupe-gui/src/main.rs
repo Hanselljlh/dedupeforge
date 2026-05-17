@@ -293,6 +293,7 @@ impl eframe::App for DedupeForgeApp {
                             .text("Minimum file size"),
                     );
                     ui.checkbox(&mut profile.cache_enabled, "Enable cache");
+                    ui.checkbox(&mut profile.scan_archives, "Scan zip archives");
                     ui.label("Cache Path");
                     ui.text_edit_singleline(&mut self.cache_path_text);
                     ui.add(

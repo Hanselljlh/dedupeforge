@@ -1,5 +1,5 @@
 use crate::fs_walk::{collect_files, FileEntry, FileIdentity};
-use crate::hash::{hash_file, hash_file_prefix, HashAlgorithm};
+use crate::hash::{hash_bytes, hash_file, hash_file_prefix, HashAlgorithm};
 use crate::similar::{scan_duplicate_folders, scan_similar_images, scan_similar_names};
 use crate::verify::files_equal;
 use anyhow::Result;
@@ -27,6 +27,7 @@ pub struct ScanConfig {
     pub image_rotation_invariant: bool,
     pub media_duration_tolerance_secs: f64,
     pub media_fingerprint_distance_threshold: u32,
+    pub scan_archives: bool,
     pub ignore_patterns: Vec<String>,
 }
 
@@ -168,6 +169,14 @@ pub fn scan_exact(config: &ScanConfig) -> Result<ScanReport> {
             .cmp(&a.size)
             .then_with(|| a.items[0].path.cmp(&b.items[0].path))
     });
+    if config.scan_archives {
+        duplicate_groups.extend(scan_zip_archives_exact(config, &mut errors)?);
+        duplicate_groups.sort_by(|a, b| {
+            b.size
+                .cmp(&a.size)
+                .then_with(|| a.items[0].path.cmp(&b.items[0].path))
+        });
+    }
 
     Ok(ScanReport {
         mode: ScanMode::Exact,
@@ -322,6 +331,96 @@ fn hash_with_cache(
     Ok((hash, false))
 }
 
+fn scan_zip_archives_exact(config: &ScanConfig, errors: &mut Vec<String>) -> Result<Vec<DuplicateGroup>> {
+    let mut by_hash: HashMap<(u64, String), Vec<DuplicateItem>> = HashMap::new();
+
+    for root in &config.paths {
+        for entry in walkdir::WalkDir::new(root)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+        {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let path = entry.path();
+            if !matches!(
+                path.extension().and_then(|ext| ext.to_str()).map(|ext| ext.to_ascii_lowercase()).as_deref(),
+                Some("zip")
+            ) {
+                continue;
+            }
+
+            if let Err(err) = collect_zip_members(
+                path,
+                config,
+                &mut by_hash,
+            ) {
+                errors.push(format!("{}: {err}", path.display()));
+            }
+        }
+    }
+
+    let mut groups = Vec::new();
+    for ((size, hash), mut items) in by_hash {
+        if items.len() < 2 {
+            continue;
+        }
+        items.sort_by(|a, b| a.path.cmp(&b.path));
+        if let Some(first) = items.first_mut() {
+            first.suggested_keep = true;
+        }
+        groups.push(DuplicateGroup {
+            size,
+            algorithm: format!("{} (archive)", config.algorithm.label()),
+            hash,
+            reason: "same archive member size + same full hash".to_string(),
+            items,
+        });
+    }
+
+    Ok(groups)
+}
+
+fn collect_zip_members(
+    archive_path: &Path,
+    config: &ScanConfig,
+    by_hash: &mut HashMap<(u64, String), Vec<DuplicateItem>>,
+) -> Result<()> {
+    let file = std::fs::File::open(archive_path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+    for index in 0..archive.len() {
+        let mut member = archive.by_index(index)?;
+        if !member.is_file() {
+            continue;
+        }
+        let size = member.size();
+        if size < config.min_size {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        use std::io::Read;
+        member.read_to_end(&mut bytes)?;
+        let hash = hash_bytes(&bytes, config.algorithm)?;
+        let pseudo_path = PathBuf::from(format!(
+            "{}!{}",
+            archive_path.display(),
+            member.name()
+        ));
+        by_hash
+            .entry((size, hash.clone()))
+            .or_default()
+            .push(DuplicateItem {
+                path: pseudo_path,
+                size,
+                modified_unix: None,
+                is_protected: true,
+                suggested_keep: false,
+            });
+    }
+    Ok(())
+}
+
 fn cache_identity(file: &FileEntry) -> Option<CacheFileIdentity> {
     file.identity
         .as_ref()
@@ -425,6 +524,7 @@ fn item_sort_key(f: &FileEntry) -> (bool, Option<i64>, usize, String) {
 mod tests {
     use super::*;
     use std::fs;
+    use std::io::Write;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -471,6 +571,7 @@ mod tests {
             image_rotation_invariant: false,
             media_duration_tolerance_secs: 2.0,
             media_fingerprint_distance_threshold: 32,
+            scan_archives: false,
             ignore_patterns: Vec::new(),
         };
 
@@ -521,6 +622,7 @@ mod tests {
             image_rotation_invariant: false,
             media_duration_tolerance_secs: 2.0,
             media_fingerprint_distance_threshold: 32,
+            scan_archives: false,
             ignore_patterns: Vec::new(),
         };
 
@@ -563,6 +665,7 @@ mod tests {
             image_rotation_invariant: false,
             media_duration_tolerance_secs: 2.0,
             media_fingerprint_distance_threshold: 32,
+            scan_archives: false,
             ignore_patterns: Vec::new(),
         };
 
@@ -670,6 +773,7 @@ mod tests {
             image_rotation_invariant: false,
             media_duration_tolerance_secs: 2.0,
             media_fingerprint_distance_threshold: 32,
+            scan_archives: false,
             ignore_patterns: Vec::new(),
         };
 
@@ -820,5 +924,62 @@ mod tests {
         drop(cache);
         let _ = fs::remove_file(original);
         let _ = fs::remove_dir_all(cache_path.parent().unwrap());
+    }
+
+    #[test]
+    fn exact_scan_can_report_duplicate_zip_members() {
+        let root = temp_dir("archive-scan");
+        let left_zip = root.join("left.zip");
+        let right_zip = root.join("right.zip");
+
+        write_zip(&left_zip, "a.txt", b"same-bytes");
+        write_zip(&right_zip, "b.txt", b"same-bytes");
+
+        let config = ScanConfig {
+            mode: ScanMode::Exact,
+            paths: vec![root.clone()],
+            protected_roots: Vec::new(),
+            algorithm: HashAlgorithm::Blake3,
+            partial_bytes: 4,
+            min_size: 1,
+            ignore_hidden: true,
+            byte_verify: false,
+            cache: CacheConfig {
+                enabled: false,
+                path: None,
+                modified_time_tolerance_secs: 0,
+            },
+            name_similarity_threshold: 85,
+            folder_similarity_threshold: 85,
+            image_hash_size: 8,
+            image_hamming_threshold: 12,
+            image_rotation_invariant: false,
+            media_duration_tolerance_secs: 2.0,
+            media_fingerprint_distance_threshold: 32,
+            scan_archives: true,
+            ignore_patterns: Vec::new(),
+        };
+
+        let report = scan_exact(&config).unwrap();
+        assert!(report
+            .duplicate_groups
+            .iter()
+            .any(|group| group.algorithm.contains("archive")));
+        assert!(report
+            .duplicate_groups
+            .iter()
+            .flat_map(|group| group.items.iter())
+            .any(|item| item.is_protected));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn write_zip(path: &Path, member_name: &str, bytes: &[u8]) {
+        let file = fs::File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file(member_name, options).unwrap();
+        zip.write_all(bytes).unwrap();
+        zip.finish().unwrap();
     }
 }
