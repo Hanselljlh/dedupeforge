@@ -105,3 +105,108 @@ fn hash_sha256<R: Read>(reader: &mut R, max_bytes: Option<u64>) -> Result<String
 
     Ok(hex::encode(hasher.finalize()))
 }
+
+
+#[cfg(test)]
+mod tests {
+        use super::*;
+        use std::io::Write;
+        use std::path::Path;
+        use tempfile::NamedTempFile;
+
+    fn temp_with(content: &[u8]) -> NamedTempFile {
+                let mut f = NamedTempFile::new().unwrap();
+                f.write_all(content).unwrap();
+                f
+    }
+
+    #[test]
+        fn blake3_same_content_same_hash() {
+                    let a = temp_with(b"hello world");
+                    let b = temp_with(b"hello world");
+                    assert_eq!(
+                                    hash_file(a.path(), HashAlgorithm::Blake3).unwrap(),
+                                    hash_file(b.path(), HashAlgorithm::Blake3).unwrap(),
+                                );
+        }
+
+    #[test]
+        fn xxh3_same_content_same_hash() {
+                    let a = temp_with(b"hello world");
+                    let b = temp_with(b"hello world");
+                    assert_eq!(
+                                    hash_file(a.path(), HashAlgorithm::Xxh3_128).unwrap(),
+                                    hash_file(b.path(), HashAlgorithm::Xxh3_128).unwrap(),
+                                );
+        }
+
+    #[test]
+        fn sha256_same_content_same_hash() {
+                    let a = temp_with(b"hello world");
+                    let b = temp_with(b"hello world");
+                    assert_eq!(
+                                    hash_file(a.path(), HashAlgorithm::Sha256).unwrap(),
+                                    hash_file(b.path(), HashAlgorithm::Sha256).unwrap(),
+                                );
+        }
+
+    #[test]
+        fn different_content_produces_different_hash() {
+                    let a = temp_with(b"hello world");
+                    let b = temp_with(b"hello WORLD");
+                    assert_ne!(
+                                    hash_file(a.path(), HashAlgorithm::Blake3).unwrap(),
+                                    hash_file(b.path(), HashAlgorithm::Blake3).unwrap(),
+                                );
+        }
+
+    #[test]
+        fn empty_file_hashes_consistently() {
+                    let a = temp_with(b"");
+                    let b = temp_with(b"");
+                    assert_eq!(
+                                    hash_file(a.path(), HashAlgorithm::Blake3).unwrap(),
+                                    hash_file(b.path(), HashAlgorithm::Blake3).unwrap(),
+                                );
+        }
+
+    #[test]
+        fn prefix_hash_matches_full_hash_of_same_bytes() {
+                    let full = temp_with(b"hello world");
+                    let prefix_only = temp_with(b"hello");
+                    let prefix_hash = hash_file_prefix(full.path(), HashAlgorithm::Blake3, 5).unwrap();
+                    let full_small = hash_file(prefix_only.path(), HashAlgorithm::Blake3).unwrap();
+                    assert_eq!(prefix_hash, full_small);
+        }
+
+    #[test]
+        fn prefix_hash_differs_from_full_hash_when_file_is_longer() {
+                    let f = temp_with(b"hello world");
+                    let prefix = hash_file_prefix(f.path(), HashAlgorithm::Blake3, 5).unwrap();
+                    let full = hash_file(f.path(), HashAlgorithm::Blake3).unwrap();
+                    assert_ne!(prefix, full);
+        }
+
+    #[test]
+        fn prefix_larger_than_file_equals_full_hash() {
+                    let f = temp_with(b"tiny");
+                    let prefix = hash_file_prefix(f.path(), HashAlgorithm::Blake3, 100_000).unwrap();
+                    let full = hash_file(f.path(), HashAlgorithm::Blake3).unwrap();
+                    assert_eq!(prefix, full);
+        }
+
+    #[test]
+        fn algorithm_labels_are_correct() {
+                    assert_eq!(HashAlgorithm::Blake3.label(), "blake3");
+                    assert_eq!(HashAlgorithm::Xxh3_128.label(), "xxh3_128");
+                    assert_eq!(HashAlgorithm::Sha256.label(), "sha256");
+        }
+
+    #[test]
+        fn missing_file_returns_error() {
+                    let result = hash_file(Path::new("/nonexistent/__dedupeforge_test__.bin"), HashAlgorithm::Blake3);
+                    assert!(result.is_err());
+        }
+                    assert!(result.is_err());
+        }
+}
