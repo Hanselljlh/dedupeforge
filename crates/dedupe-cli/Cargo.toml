@@ -1,0 +1,16 @@
+[package]
+name = "dedupe-cli"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "dedupeforge"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+csv.workspace = true
+dedupe-core = { path = "../dedupe-core" }
+serde_json.workspace = true
