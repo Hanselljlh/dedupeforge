@@ -55,16 +55,16 @@ The long-term goal is not just to delete duplicates. The goal is to help a user 
 
 ```text
 .
-├── crates/
-│   ├── dedupe-core/          # reusable scan engine library
-│   └── dedupe-cli/           # CLI frontend
-├── docs/
-│   ├── product/              # vision, feature matrix, roadmap
-│   ├── engineering/          # architecture, safety, scan pipeline
-│   └── adr/                  # architecture decision records
-├── examples/                 # example commands and output shapes
-├── scripts/                  # local development helpers
-└── .github/                  # CI, issue templates, PR template
+|-- crates/
+|   |-- dedupe-core/          # reusable scan engine library
+|   `-- dedupe-cli/           # CLI frontend
+|-- docs/
+|   |-- product/              # vision, feature matrix, roadmap
+|   |-- engineering/          # architecture, safety, scan pipeline
+|   `-- adr/                  # architecture decision records
+|-- examples/                 # example commands and output shapes
+|-- scripts/                  # local development helpers
+`-- .github/                  # CI, issue templates, PR template
 ```
 
 See [docs/REPO_LAYOUT.md](docs/REPO_LAYOUT.md) for the full planned structure.
@@ -139,6 +139,7 @@ Current MVP behavior:
 - every duplicate group gets exactly one suggested keep item
 - exact duplicate groups are based on same size plus same full hash
 - optional byte-by-byte verification can be enabled
+- zero-byte files are excluded by default through `--min-size 1`
 
 Future action behavior:
 

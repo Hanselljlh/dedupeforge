@@ -2,12 +2,17 @@
 
 ## Current MVP hardening
 
-- [ ] Add fixture-based tests for exact duplicate grouping.
-- [ ] Add tests for protected-folder keep selection.
-- [ ] Add tests for JSON and CSV output shape.
+- [x] Add fixture-based tests for exact duplicate grouping.
+- [x] Add tests for protected-folder keep selection.
+- [x] Add tests for JSON and CSV output shape.
 - [ ] Add path canonicalization edge-case tests.
 - [ ] Add error test for unreadable files.
-- [ ] Decide whether zero-byte files should be included by default.
+- [x] Decide whether zero-byte files should be included by default.
+
+Current decision:
+
+- zero-byte files are excluded by default through `--min-size 1`
+- include them explicitly by running with `--min-size 0`
 
 ## Cache
 
