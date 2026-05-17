@@ -38,15 +38,16 @@ Exit criteria:
 
 Goal: make repeated large scans practical.
 
-Planned:
+Implemented:
 
 - SQLite cache
-- file identity table
-- file metadata table
-- full hash table
-- partial hash table
+- file path and metadata cache records
+- full hash cache
+- partial hash cache
 - cache invalidation on size/mtime/path changes
 - scan profile config files
+- named scan presets
+- cache clear/rebuild controls
 
 Exit criteria:
 
@@ -58,13 +59,14 @@ Exit criteria:
 
 Goal: allow cleanup without permanent damage.
 
-Planned:
+Implemented:
 
 - action planner
 - dry-run action output
 - quarantine folder move
 - undo manifest
 - action log
+- restore from manifest
 - protected path enforcement
 - group invariant: never remove all files in a group
 

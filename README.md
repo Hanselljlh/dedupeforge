@@ -10,7 +10,7 @@ The current repository is an MVP backend and CLI. It is intentionally non-destru
 
 ## Project status
 
-Current stage: **MVP exact duplicate scanner**
+Current stage: **Phase 3 complete, GUI prototype next**
 
 Implemented:
 
@@ -22,13 +22,19 @@ Implemented:
 - optional byte-by-byte verification
 - protected/reference folders
 - suggested keep item per group
+- SQLite cache with reusable hash lookups
+- scan profiles and named presets
+- dry-run action plan generation
+- selectable keep-rule action planning
+- saved and loaded action plans
+- quarantine move execution
+- undo manifest writing
+- action log writing
+- restore from manifest
 - human, JSON, and CSV output
 
 Not implemented yet:
 
-- SQLite cache
-- quarantine/move actions
-- undo manifests
 - GUI
 - similar image matching
 - similar video matching
@@ -133,6 +139,96 @@ Export CSV:
 cargo run --release --bin dedupeforge -- /data/photos --output csv > duplicates.csv
 ```
 
+Use the network-tolerant cache preset for cross-system scans:
+
+```bash
+cargo run --release --bin dedupeforge -- /data/a /data/b --preset network-tolerant
+```
+
+This preset enables cache reuse and allows small modified-time drift during cache lookup.
+
+Use explicit cache controls:
+
+```bash
+cargo run --release --bin dedupeforge -- /data/photos --cache --cache-path .dedupeforge-cache.sqlite3
+```
+
+```bash
+cargo run --release --bin dedupeforge -- /data/photos --cache --rebuild-cache
+```
+
+```bash
+cargo run --release --bin dedupeforge -- /data/photos --clear-cache
+```
+
+Generate a dry-run quarantine action plan:
+
+```bash
+cargo run --release --bin dedupeforge -- /data/photos --action-plan --output json
+```
+
+Choose a different keep rule when building the plan:
+
+```bash
+cargo run --release --bin dedupeforge -- /data/photos --action-plan --selection-rule keep-newest
+```
+
+Save the generated plan to disk:
+
+```bash
+cargo run --release --bin dedupeforge -- /data/photos --action-plan --save-action-plan plan.json --output json
+```
+
+Load a previously saved plan:
+
+```bash
+cargo run --release --bin dedupeforge -- --load-action-plan plan.json --output json
+```
+
+Execute a previously saved plan:
+
+```bash
+cargo run --release --bin dedupeforge -- --load-action-plan plan.json --execute-action-plan --quarantine-root .quarantine
+```
+
+Validate the generated plan and fail if invariants are broken:
+
+```bash
+cargo run --release --bin dedupeforge -- /data/photos --action-plan --validate-action-plan
+```
+
+Execute the quarantine move plan and write a manifest:
+
+```bash
+cargo run --release --bin dedupeforge -- /data/photos --action-plan --execute-action-plan --quarantine-root .quarantine
+```
+
+Restore files from a quarantine manifest:
+
+```bash
+cargo run --release --bin dedupeforge -- --restore-manifest .quarantine/1234567890/manifest.json
+```
+
+Cache notes:
+
+- `--clear-cache` removes the cache file and exits
+- `--rebuild-cache` removes the cache file first, then runs the scan and repopulates it
+- default cache path is `.dedupeforge-cache.sqlite3`
+- `network-tolerant` enables cache plus a `2` second modified-time tolerance
+- CLI flags still override profile and preset defaults
+
+Example profiles are available in [examples/profiles](C:/Users/Shadowed/Documents/New%20project%204/dedupeforge/examples/profiles):
+
+- [local-fast.json](C:/Users/Shadowed/Documents/New%20project%204/dedupeforge/examples/profiles/local-fast.json)
+- [network-tolerant.json](C:/Users/Shadowed/Documents/New%20project%204/dedupeforge/examples/profiles/network-tolerant.json)
+- [archive-verify.json](C:/Users/Shadowed/Documents/New%20project%204/dedupeforge/examples/profiles/archive-verify.json)
+
+You can load one with:
+
+```bash
+cargo run --release --bin dedupeforge -- /data/photos --profile examples/profiles/network-tolerant.json
+```
+
 Run tests on Windows:
 
 ```powershell
@@ -152,13 +248,15 @@ Current MVP behavior:
 - optional byte-by-byte verification can be enabled
 - zero-byte files are excluded by default through `--min-size 1`
 
-Future action behavior:
+Current action behavior:
 
-- dry-run by default
-- move-to-quarantine before delete
-- undo manifest for every action batch
-- never allow every file in a group to be selected for deletion
-- protected/reference paths cannot be deleted by automated rules
+- dry-run action plans are available
+- move-to-quarantine is implemented
+- undo manifests are written for quarantine batches
+- action logs are written for quarantine batches
+- restore from manifest is implemented
+- protected/reference paths cannot be selected for automated quarantine moves
+- the planner prevents selecting every file in a duplicate group
 
 See [docs/engineering/SAFETY_MODEL.md](docs/engineering/SAFETY_MODEL.md).
 

@@ -9,6 +9,7 @@ use xxhash_rust::xxh3::Xxh3;
 const BUF_SIZE: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum HashAlgorithm {
     Blake3,
     Xxh3_128,

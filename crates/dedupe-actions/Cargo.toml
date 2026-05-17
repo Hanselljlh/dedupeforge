@@ -1,18 +1,11 @@
 [package]
-name = "dedupe-cli"
+name = "dedupe-actions"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
 
-[[bin]]
-name = "dedupeforge"
-path = "src/main.rs"
-
 [dependencies]
 anyhow.workspace = true
-clap.workspace = true
-csv.workspace = true
-dedupe-actions = { path = "../dedupe-actions" }
 dedupe-core = { path = "../dedupe-core" }
 serde.workspace = true
 serde_json.workspace = true

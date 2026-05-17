@@ -10,7 +10,14 @@ pub struct FileEntry {
     pub path: PathBuf,
     pub size: u64,
     pub modified_unix: Option<i64>,
+    pub identity: Option<FileIdentity>,
     pub is_protected: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+pub struct FileIdentity {
+    pub device_id: String,
+    pub inode: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -72,6 +79,7 @@ pub fn collect_files(
                 .ok()
                 .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
                 .map(|d| d.as_secs() as i64);
+            let identity = file_identity_from_metadata(&metadata);
             let is_protected = protected_roots
                 .iter()
                 .any(|p| canonical_path.starts_with(p));
@@ -80,6 +88,7 @@ pub fn collect_files(
                 path: canonical_path,
                 size: metadata.len(),
                 modified_unix,
+                identity,
                 is_protected,
             });
         }
@@ -110,6 +119,26 @@ fn is_hidden_entry(entry: &DirEntry) -> bool {
 #[allow(dead_code)]
 fn is_under_path(path: &Path, root: &Path) -> bool {
     path.starts_with(root)
+}
+
+#[cfg(windows)]
+fn file_identity_from_metadata(_metadata: &fs::Metadata) -> Option<FileIdentity> {
+    None
+}
+
+#[cfg(unix)]
+fn file_identity_from_metadata(metadata: &fs::Metadata) -> Option<FileIdentity> {
+    use std::os::unix::fs::MetadataExt;
+
+    Some(FileIdentity {
+        device_id: metadata.dev().to_string(),
+        inode: metadata.ino().to_string(),
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn file_identity_from_metadata(_metadata: &fs::Metadata) -> Option<FileIdentity> {
+    None
 }
 
 #[cfg(test)]

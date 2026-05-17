@@ -16,20 +16,26 @@ Current decision:
 
 ## Cache
 
-- [ ] Create `dedupe-cache` crate.
-- [ ] Add SQLite schema.
-- [ ] Add cache invalidation rules.
-- [ ] Add cache enable/disable CLI option.
-- [ ] Add cache location CLI option.
+- [x] Create `dedupe-cache` crate.
+- [x] Add SQLite schema.
+- [x] Add cache invalidation rules.
+- [x] Add cache enable/disable CLI option.
+- [x] Add cache location CLI option.
+- [x] Add cache clear/rebuild CLI controls.
+- [x] Add named cache/profile presets.
+- [x] Add example profile files.
+- [x] Improve cache identity beyond path + size + modified time.
 
 ## Actions
 
-- [ ] Create `dedupe-actions` crate.
-- [ ] Add action plan model.
-- [ ] Add dry-run output.
-- [ ] Add quarantine move action.
-- [ ] Add undo manifest.
-- [ ] Add restore command.
+- [x] Create `dedupe-actions` crate.
+- [x] Add action plan model.
+- [x] Add dry-run output.
+- [x] Add quarantine move action.
+- [x] Add undo manifest.
+- [x] Add restore command.
+- [x] Add selectable keep-rule planning.
+- [x] Add saved action-plan output.
 
 ## GUI
 

@@ -1,8 +1,8 @@
 # Cache design
 
-Status: planned.
+Status: implemented in first conservative form.
 
-The cache should make repeated scans faster without becoming a source of false matches.
+The cache makes repeated scans faster without becoming a source of false matches.
 
 ## Database
 
@@ -15,7 +15,7 @@ Reasons:
 - easy to inspect
 - good enough for large local metadata caches
 
-## Suggested tables
+## Current tables
 
 ### files
 
@@ -79,7 +79,8 @@ CREATE TABLE scan_runs (
 
 A cached hash may be reused when:
 
-- path or file identity matches
+- path matches
+- or a stronger file identity matches where supported
 - size matches
 - modified timestamp matches, if available
 - file has not been marked dirty
@@ -93,7 +94,7 @@ Some network filesystems may provide unreliable inode/device data or timestamp p
 The cache should support conservative mode:
 
 - rely on path + size + modified time
-- optionally rehash more often
+- optionally allow small modified-time drift
 - allow user to disable cache per scan
 
 ## Cache invalidation rule
