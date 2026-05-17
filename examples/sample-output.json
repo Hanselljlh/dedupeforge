@@ -1,0 +1,29 @@
+{
+  "scanned_files": 4,
+  "candidate_size_groups": 1,
+  "duplicate_groups": [
+    {
+      "size": 123456,
+      "algorithm": "blake3",
+      "hash": "examplehash",
+      "reason": "same size + same full hash",
+      "items": [
+        {
+          "path": "/data/archive/photo.jpg",
+          "size": 123456,
+          "modified_unix": 1760000000,
+          "is_protected": true,
+          "suggested_keep": true
+        },
+        {
+          "path": "/data/current/photo-copy.jpg",
+          "size": 123456,
+          "modified_unix": 1760000001,
+          "is_protected": false,
+          "suggested_keep": false
+        }
+      ]
+    }
+  ],
+  "errors": []
+}
