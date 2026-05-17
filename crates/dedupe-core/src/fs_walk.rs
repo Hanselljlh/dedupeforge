@@ -47,7 +47,10 @@ pub fn collect_files(
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(err) => {
-                    errors.push(format!("failed to read entry under {}: {err}", root.display()));
+                    errors.push(format!(
+                        "failed to read entry under {}: {err}",
+                        root.display()
+                    ));
                     continue;
                 }
             };
@@ -185,8 +188,12 @@ mod tests {
         fs::write(protected.join("keep.txt"), b"same").unwrap();
 
         std::env::set_current_dir(&root).unwrap();
-        let files = collect_files(&[PathBuf::from("archive")], &[PathBuf::from("archive")], true)
-            .unwrap();
+        let files = collect_files(
+            &[PathBuf::from("archive")],
+            &[PathBuf::from("archive")],
+            true,
+        )
+        .unwrap();
         std::env::set_current_dir(original_dir).unwrap();
 
         let protected_file = files
