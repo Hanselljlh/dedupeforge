@@ -275,7 +275,10 @@ pub fn load_action_plan(path: &Path) -> Result<ActionPlan> {
     Ok(plan)
 }
 
-fn selected_items(group: &DuplicateGroup, keep_index: usize) -> impl Iterator<Item = &DuplicateItem> {
+fn selected_items(
+    group: &DuplicateGroup,
+    keep_index: usize,
+) -> impl Iterator<Item = &DuplicateItem> {
     group
         .items
         .iter()
@@ -645,10 +648,9 @@ fn validate_execution_environment(plan: &ActionPlan, root: &Path) -> Result<()> 
 
 fn validate_hardlink_environment(plan: &ActionPlan) -> Result<()> {
     for item in &plan.items {
-        let target = item
-            .replacement_target
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("replacement target is required for hardlink actions"))?;
+        let target = item.replacement_target.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("replacement target is required for hardlink actions")
+        })?;
         if !same_filesystem(&item.path, target)? {
             bail!(
                 "hardlink replacement requires the same filesystem: {} vs {}",
@@ -964,9 +966,12 @@ mod tests {
         report.duplicate_groups[0].items[0].path = root.join("keep.txt");
         report.duplicate_groups[0].items[1].path = root.join("copy.txt");
 
-        let plan =
-            build_dry_run_plan(&report, SelectionRule::KeepSuggested, ActionKind::HardlinkReplace)
-                .unwrap();
+        let plan = build_dry_run_plan(
+            &report,
+            SelectionRule::KeepSuggested,
+            ActionKind::HardlinkReplace,
+        )
+        .unwrap();
         let manifest = execute_quarantine_plan(&plan, &quarantine_root).unwrap();
 
         assert_eq!(manifest.action, "hardlink_replace");

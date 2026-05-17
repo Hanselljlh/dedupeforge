@@ -47,6 +47,16 @@ pub struct CacheLookupPolicy {
     pub modified_time_tolerance_secs: i64,
 }
 
+#[derive(Clone, Debug)]
+pub struct CacheHashKey<'a> {
+    pub path: &'a Path,
+    pub identity: Option<&'a CacheFileIdentity>,
+    pub size: u64,
+    pub modified_unix: Option<i64>,
+    pub algorithm: &'a str,
+    pub scope: HashScope,
+}
+
 impl Cache {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
@@ -65,15 +75,10 @@ impl Cache {
 
     pub fn lookup_hash(
         &self,
-        path: &Path,
-        identity: Option<&CacheFileIdentity>,
-        size: u64,
-        modified_unix: Option<i64>,
-        algorithm: &str,
-        scope: HashScope,
+        key: &CacheHashKey<'_>,
         policy: CacheLookupPolicy,
     ) -> Result<Option<CachedHash>> {
-        let canonical_path = canonicalize_for_lookup(path);
+        let canonical_path = canonicalize_for_lookup(key.path);
         let mut stmt = self.conn.prepare(
             "SELECT h.hash, f.modified_unix
              FROM files f
@@ -89,12 +94,12 @@ impl Cache {
             .query_row(
                 params![
                     canonical_path.to_string_lossy().to_string(),
-                    identity.map(|id| id.device_id.as_str()),
-                    identity.map(|id| id.inode.as_str()),
-                    size as i64,
-                    algorithm,
-                    scope.label(),
-                    scope.bytes_hashed(),
+                    key.identity.map(|id| id.device_id.as_str()),
+                    key.identity.map(|id| id.inode.as_str()),
+                    key.size as i64,
+                    key.algorithm,
+                    key.scope.label(),
+                    key.scope.bytes_hashed(),
                 ],
                 |row| {
                     Ok((
@@ -106,21 +111,12 @@ impl Cache {
             .optional()?;
 
         Ok(found.and_then(|(hash, cached_modified_unix)| {
-            modified_time_matches(modified_unix, cached_modified_unix, policy).then_some(hash)
+            modified_time_matches(key.modified_unix, cached_modified_unix, policy).then_some(hash)
         }))
     }
 
-    pub fn store_hash(
-        &self,
-        path: &Path,
-        identity: Option<&CacheFileIdentity>,
-        size: u64,
-        modified_unix: Option<i64>,
-        algorithm: &str,
-        scope: HashScope,
-        hash: &str,
-    ) -> Result<()> {
-        let canonical_path = canonicalize_for_lookup(path);
+    pub fn store_hash(&self, key: &CacheHashKey<'_>, hash: &str) -> Result<()> {
+        let canonical_path = canonicalize_for_lookup(key.path);
         let now = unix_now();
         self.conn.execute(
             "INSERT INTO files (path, canonical_path, device_id, inode, size, modified_unix, last_seen_unix)
@@ -135,10 +131,10 @@ impl Cache {
             params![
                 canonical_path.to_string_lossy().to_string(),
                 canonical_path.to_string_lossy().to_string(),
-                identity.map(|id| id.device_id.as_str()),
-                identity.map(|id| id.inode.as_str()),
-                size as i64,
-                modified_unix,
+                key.identity.map(|id| id.device_id.as_str()),
+                key.identity.map(|id| id.inode.as_str()),
+                key.size as i64,
+                key.modified_unix,
                 now,
             ],
         )?;
@@ -157,9 +153,9 @@ impl Cache {
                 created_unix = excluded.created_unix",
             params![
                 file_id,
-                algorithm,
-                scope.label(),
-                scope.bytes_hashed(),
+                key.algorithm,
+                key.scope.label(),
+                key.scope.bytes_hashed(),
                 hash,
                 now,
             ],
@@ -240,6 +236,24 @@ fn modified_time_matches(
 mod tests {
     use super::*;
 
+    fn test_key<'a>(
+        path: &'a Path,
+        identity: Option<&'a CacheFileIdentity>,
+        size: u64,
+        modified_unix: Option<i64>,
+        algorithm: &'a str,
+        scope: HashScope,
+    ) -> CacheHashKey<'a> {
+        CacheHashKey {
+            path,
+            identity,
+            size,
+            modified_unix,
+            algorithm,
+            scope,
+        }
+    }
+
     fn temp_db_path(name: &str) -> PathBuf {
         let unique = unix_now();
         std::env::temp_dir().join(format!("dedupeforge-cache-{unique}-{name}.sqlite3"))
@@ -254,24 +268,14 @@ mod tests {
         let cache = Cache::open(&db).unwrap();
         cache
             .store_hash(
-                &file,
-                None,
-                3,
-                Some(10),
-                "blake3",
-                HashScope::Full,
+                &test_key(&file, None, 3, Some(10), "blake3", HashScope::Full),
                 "hash123",
             )
             .unwrap();
 
         let found = cache
             .lookup_hash(
-                &file,
-                None,
-                3,
-                Some(10),
-                "blake3",
-                HashScope::Full,
+                &test_key(&file, None, 3, Some(10), "blake3", HashScope::Full),
                 CacheLookupPolicy {
                     modified_time_tolerance_secs: 0,
                 },
@@ -293,24 +297,28 @@ mod tests {
         let cache = Cache::open(&db).unwrap();
         cache
             .store_hash(
-                &file,
-                None,
-                3,
-                Some(10),
-                "sha256",
-                HashScope::Partial { bytes_hashed: 2 },
+                &test_key(
+                    &file,
+                    None,
+                    3,
+                    Some(10),
+                    "sha256",
+                    HashScope::Partial { bytes_hashed: 2 },
+                ),
                 "hash456",
             )
             .unwrap();
 
         let found = cache
             .lookup_hash(
-                &file,
-                None,
-                4,
-                Some(10),
-                "sha256",
-                HashScope::Partial { bytes_hashed: 2 },
+                &test_key(
+                    &file,
+                    None,
+                    4,
+                    Some(10),
+                    "sha256",
+                    HashScope::Partial { bytes_hashed: 2 },
+                ),
                 CacheLookupPolicy {
                     modified_time_tolerance_secs: 0,
                 },
@@ -332,24 +340,14 @@ mod tests {
         let cache = Cache::open(&db).unwrap();
         cache
             .store_hash(
-                &file,
-                None,
-                3,
-                Some(10),
-                "blake3",
-                HashScope::Full,
+                &test_key(&file, None, 3, Some(10), "blake3", HashScope::Full),
                 "hash789",
             )
             .unwrap();
 
         let found = cache
             .lookup_hash(
-                &file,
-                None,
-                3,
-                Some(12),
-                "blake3",
-                HashScope::Full,
+                &test_key(&file, None, 3, Some(12), "blake3", HashScope::Full),
                 CacheLookupPolicy {
                     modified_time_tolerance_secs: 2,
                 },
@@ -377,24 +375,28 @@ mod tests {
         let cache = Cache::open(&db).unwrap();
         cache
             .store_hash(
-                &original,
-                Some(&identity),
-                3,
-                Some(10),
-                "blake3",
-                HashScope::Full,
+                &test_key(
+                    &original,
+                    Some(&identity),
+                    3,
+                    Some(10),
+                    "blake3",
+                    HashScope::Full,
+                ),
                 "hash-identity",
             )
             .unwrap();
 
         let found = cache
             .lookup_hash(
-                &renamed,
-                Some(&identity),
-                3,
-                Some(10),
-                "blake3",
-                HashScope::Full,
+                &test_key(
+                    &renamed,
+                    Some(&identity),
+                    3,
+                    Some(10),
+                    "blake3",
+                    HashScope::Full,
+                ),
                 CacheLookupPolicy {
                     modified_time_tolerance_secs: 0,
                 },

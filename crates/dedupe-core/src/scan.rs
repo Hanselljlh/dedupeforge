@@ -3,7 +3,7 @@ use crate::hash::{hash_bytes, hash_file, hash_file_prefix, HashAlgorithm};
 use crate::similar::{scan_duplicate_folders, scan_similar_images, scan_similar_names};
 use crate::verify::files_equal;
 use anyhow::Result;
-use dedupe_cache::{Cache, CacheFileIdentity, CacheLookupPolicy, HashScope};
+use dedupe_cache::{Cache, CacheFileIdentity, CacheHashKey, CacheLookupPolicy, HashScope};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -111,33 +111,34 @@ pub fn scan_exact(config: &ScanConfig) -> Result<ScanReport> {
     let by_size = group_by_size(files);
     let candidate_size_groups = by_size.values().filter(|g| g.len() > 1).count();
 
-    let mut errors = collected.errors;
-    let mut cache_hits = 0usize;
-    let mut cache_misses = 0usize;
+    let mut stats = HashRunStats {
+        errors: collected.errors,
+        ..Default::default()
+    };
     let size_candidate_files: Vec<FileEntry> = by_size.into_values().flatten().collect();
     let partial_candidates = hash_files(
         cache.as_ref(),
         size_candidate_files,
-        config.algorithm,
-        config.partial_bytes,
-        true,
-        config.cache.modified_time_tolerance_secs,
-        &mut errors,
-        &mut cache_hits,
-        &mut cache_misses,
+        HashRunOptions {
+            algorithm: config.algorithm,
+            partial_bytes: config.partial_bytes,
+            partial: true,
+            modified_time_tolerance_secs: config.cache.modified_time_tolerance_secs,
+        },
+        &mut stats,
     );
     let partial_candidate_files: Vec<FileEntry> =
         partial_candidates.into_values().flatten().collect();
     let full_candidates = hash_files(
         cache.as_ref(),
         partial_candidate_files,
-        config.algorithm,
-        0,
-        false,
-        config.cache.modified_time_tolerance_secs,
-        &mut errors,
-        &mut cache_hits,
-        &mut cache_misses,
+        HashRunOptions {
+            algorithm: config.algorithm,
+            partial_bytes: 0,
+            partial: false,
+            modified_time_tolerance_secs: config.cache.modified_time_tolerance_secs,
+        },
+        &mut stats,
     );
 
     let mut duplicate_groups = Vec::new();
@@ -149,7 +150,7 @@ pub fn scan_exact(config: &ScanConfig) -> Result<ScanReport> {
         group.sort_by_key(item_sort_key);
 
         if config.byte_verify {
-            for verified in split_by_byte_equality(&group, &mut errors) {
+            for verified in split_by_byte_equality(&group, &mut stats.errors) {
                 if verified.len() > 1 {
                     duplicate_groups.push(make_group(
                         verified,
@@ -170,7 +171,7 @@ pub fn scan_exact(config: &ScanConfig) -> Result<ScanReport> {
             .then_with(|| a.items[0].path.cmp(&b.items[0].path))
     });
     if config.scan_archives {
-        duplicate_groups.extend(scan_zip_archives_exact(config, &mut errors)?);
+        duplicate_groups.extend(scan_zip_archives_exact(config, &mut stats.errors)?);
         duplicate_groups.sort_by(|a, b| {
             b.size
                 .cmp(&a.size)
@@ -182,10 +183,10 @@ pub fn scan_exact(config: &ScanConfig) -> Result<ScanReport> {
         mode: ScanMode::Exact,
         scanned_files,
         candidate_size_groups,
-        cache_hits,
-        cache_misses,
+        cache_hits: stats.cache_hits,
+        cache_misses: stats.cache_misses,
         duplicate_groups,
-        errors,
+        errors: stats.errors,
         risk: MatchRisk::Low,
     })
 }
@@ -199,28 +200,40 @@ fn group_by_size(files: Vec<FileEntry>) -> HashMap<u64, Vec<FileEntry>> {
     map
 }
 
-fn hash_files(
-    cache: Option<&Cache>,
-    files: Vec<FileEntry>,
+#[derive(Clone, Copy)]
+struct HashRunOptions {
     algorithm: HashAlgorithm,
     partial_bytes: u64,
     partial: bool,
     modified_time_tolerance_secs: i64,
-    errors: &mut Vec<String>,
-    cache_hits: &mut usize,
-    cache_misses: &mut usize,
+}
+
+#[derive(Default)]
+struct HashRunStats {
+    errors: Vec<String>,
+    cache_hits: usize,
+    cache_misses: usize,
+}
+
+type HashOutcome = (FileEntry, Result<(String, bool), String>);
+
+fn hash_files(
+    cache: Option<&Cache>,
+    files: Vec<FileEntry>,
+    options: HashRunOptions,
+    stats: &mut HashRunStats,
 ) -> HashMap<(u64, String), Vec<FileEntry>> {
-    let hashed: Vec<(FileEntry, Result<(String, bool), String>)> = if let Some(cache) = cache {
+    let hashed: Vec<HashOutcome> = if let Some(cache) = cache {
         files
             .into_iter()
             .map(|file| {
                 let hash_result = hash_with_cache(
                     Some(cache),
                     &file,
-                    algorithm,
-                    partial_bytes,
-                    partial,
-                    modified_time_tolerance_secs,
+                    options.algorithm,
+                    options.partial_bytes,
+                    options.partial,
+                    options.modified_time_tolerance_secs,
                 );
                 match hash_result {
                     Ok((hash, used_cache)) => (file, Ok((hash, used_cache))),
@@ -232,7 +245,12 @@ fn hash_files(
         files
             .into_par_iter()
             .map(|file| {
-                let hash_result = hash_without_cache(&file, algorithm, partial_bytes, partial);
+                let hash_result = hash_without_cache(
+                    &file,
+                    options.algorithm,
+                    options.partial_bytes,
+                    options.partial,
+                );
                 match hash_result {
                     Ok((hash, used_cache)) => (file, Ok((hash, used_cache))),
                     Err(e) => (file, Err(e.to_string())),
@@ -245,12 +263,14 @@ fn hash_files(
 
     for (file, maybe_hash) in hashed {
         match maybe_hash {
-            Err(error) => errors.push(format!("{}: {error}", file.path.display())),
+            Err(error) => stats
+                .errors
+                .push(format!("{}: {error}", file.path.display())),
             Ok((hash, used_cache)) => {
                 if used_cache {
-                    *cache_hits += 1;
+                    stats.cache_hits += 1;
                 } else {
-                    *cache_misses += 1;
+                    stats.cache_misses += 1;
                 }
                 map.entry((file.size, hash)).or_default().push(file);
             }
@@ -293,13 +313,16 @@ fn hash_with_cache(
     let label = algorithm.label();
 
     if let Some(cache) = cache {
+        let identity = cache_identity(file);
         if let Some(found) = cache.lookup_hash(
-            &file.path,
-            cache_identity(file).as_ref(),
-            file.size,
-            file.modified_unix,
-            label,
-            scope,
+            &CacheHashKey {
+                path: &file.path,
+                identity: identity.as_ref(),
+                size: file.size,
+                modified_unix: file.modified_unix,
+                algorithm: label,
+                scope,
+            },
             CacheLookupPolicy {
                 modified_time_tolerance_secs,
             },
@@ -318,12 +341,14 @@ fn hash_with_cache(
     if let Some(cache) = cache {
         let identity = cache_identity(file);
         cache.store_hash(
-            &file.path,
-            identity.as_ref(),
-            file.size,
-            file.modified_unix,
-            label,
-            scope,
+            &CacheHashKey {
+                path: &file.path,
+                identity: identity.as_ref(),
+                size: file.size,
+                modified_unix: file.modified_unix,
+                algorithm: label,
+                scope,
+            },
             &hash,
         )?;
     }
@@ -331,7 +356,10 @@ fn hash_with_cache(
     Ok((hash, false))
 }
 
-fn scan_zip_archives_exact(config: &ScanConfig, errors: &mut Vec<String>) -> Result<Vec<DuplicateGroup>> {
+fn scan_zip_archives_exact(
+    config: &ScanConfig,
+    errors: &mut Vec<String>,
+) -> Result<Vec<DuplicateGroup>> {
     let mut by_hash: HashMap<(u64, String), Vec<DuplicateItem>> = HashMap::new();
 
     for root in &config.paths {
@@ -345,17 +373,16 @@ fn scan_zip_archives_exact(config: &ScanConfig, errors: &mut Vec<String>) -> Res
             }
             let path = entry.path();
             if !matches!(
-                path.extension().and_then(|ext| ext.to_str()).map(|ext| ext.to_ascii_lowercase()).as_deref(),
+                path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| ext.to_ascii_lowercase())
+                    .as_deref(),
                 Some("zip")
             ) {
                 continue;
             }
 
-            if let Err(err) = collect_zip_members(
-                path,
-                config,
-                &mut by_hash,
-            ) {
+            if let Err(err) = collect_zip_members(path, config, &mut by_hash) {
                 errors.push(format!("{}: {err}", path.display()));
             }
         }
@@ -402,11 +429,7 @@ fn collect_zip_members(
         use std::io::Read;
         member.read_to_end(&mut bytes)?;
         let hash = hash_bytes(&bytes, config.algorithm)?;
-        let pseudo_path = PathBuf::from(format!(
-            "{}!{}",
-            archive_path.display(),
-            member.name()
-        ));
+        let pseudo_path = PathBuf::from(format!("{}!{}", archive_path.display(), member.name()));
         by_hash
             .entry((size, hash.clone()))
             .or_default()
@@ -424,7 +447,7 @@ fn collect_zip_members(
 fn cache_identity(file: &FileEntry) -> Option<CacheFileIdentity> {
     file.identity
         .as_ref()
-        .map(|identity| cache_identity_from_file_identity(identity))
+        .map(cache_identity_from_file_identity)
 }
 
 fn cache_identity_from_file_identity(identity: &FileIdentity) -> CacheFileIdentity {
@@ -720,23 +743,21 @@ mod tests {
 
         fs::remove_file(&missing).unwrap();
 
-        let mut errors = Vec::new();
-        let mut cache_hits = 0;
-        let mut cache_misses = 0;
+        let mut stats = HashRunStats::default();
         let hashed = hash_files(
             None,
             std::mem::take(&mut candidate_files),
-            HashAlgorithm::Blake3,
-            0,
-            false,
-            0,
-            &mut errors,
-            &mut cache_hits,
-            &mut cache_misses,
+            HashRunOptions {
+                algorithm: HashAlgorithm::Blake3,
+                partial_bytes: 0,
+                partial: false,
+                modified_time_tolerance_secs: 0,
+            },
+            &mut stats,
         );
 
-        assert_eq!(errors.len(), 1);
-        assert!(errors[0].contains("missing.txt"));
+        assert_eq!(stats.errors.len(), 1);
+        assert!(stats.errors[0].contains("missing.txt"));
         assert_eq!(hashed.len(), 1);
         assert_eq!(hashed.values().next().unwrap().len(), 2);
 
@@ -782,45 +803,53 @@ mod tests {
         let cache = Cache::open(&cache_path).unwrap();
         cache
             .store_hash(
-                &first,
-                None,
-                10,
-                Some(100),
-                "blake3",
-                HashScope::Partial { bytes_hashed: 4 },
+                &CacheHashKey {
+                    path: &first,
+                    identity: None,
+                    size: 10,
+                    modified_unix: Some(100),
+                    algorithm: "blake3",
+                    scope: HashScope::Partial { bytes_hashed: 4 },
+                },
                 "synthetic-partial",
             )
             .unwrap();
         cache
             .store_hash(
-                &second,
-                None,
-                10,
-                Some(100),
-                "blake3",
-                HashScope::Partial { bytes_hashed: 4 },
+                &CacheHashKey {
+                    path: &second,
+                    identity: None,
+                    size: 10,
+                    modified_unix: Some(100),
+                    algorithm: "blake3",
+                    scope: HashScope::Partial { bytes_hashed: 4 },
+                },
                 "synthetic-partial",
             )
             .unwrap();
         cache
             .store_hash(
-                &first,
-                None,
-                10,
-                Some(100),
-                "blake3",
-                HashScope::Full,
+                &CacheHashKey {
+                    path: &first,
+                    identity: None,
+                    size: 10,
+                    modified_unix: Some(100),
+                    algorithm: "blake3",
+                    scope: HashScope::Full,
+                },
                 "synthetic-full",
             )
             .unwrap();
         cache
             .store_hash(
-                &second,
-                None,
-                10,
-                Some(100),
-                "blake3",
-                HashScope::Full,
+                &CacheHashKey {
+                    path: &second,
+                    identity: None,
+                    size: 10,
+                    modified_unix: Some(100),
+                    algorithm: "blake3",
+                    scope: HashScope::Full,
+                },
                 "synthetic-full",
             )
             .unwrap();
@@ -842,24 +871,22 @@ mod tests {
             },
         ];
 
-        let mut errors = Vec::new();
-        let mut cache_hits = 0;
-        let mut cache_misses = 0;
+        let mut stats = HashRunStats::default();
         let hashed = hash_files(
             Some(&cache),
             candidate_files,
-            HashAlgorithm::Blake3,
-            4,
-            true,
-            2,
-            &mut errors,
-            &mut cache_hits,
-            &mut cache_misses,
+            HashRunOptions {
+                algorithm: HashAlgorithm::Blake3,
+                partial_bytes: 4,
+                partial: true,
+                modified_time_tolerance_secs: 2,
+            },
+            &mut stats,
         );
 
-        assert!(errors.is_empty());
-        assert_eq!(cache_hits, 2);
-        assert_eq!(cache_misses, 0);
+        assert!(stats.errors.is_empty());
+        assert_eq!(stats.cache_hits, 2);
+        assert_eq!(stats.cache_misses, 0);
         assert_eq!(hashed.len(), 1);
 
         drop(cache);
@@ -881,12 +908,14 @@ mod tests {
 
         cache
             .store_hash(
-                &original,
-                Some(&identity),
-                10,
-                Some(100),
-                "blake3",
-                HashScope::Full,
+                &CacheHashKey {
+                    path: &original,
+                    identity: Some(&identity),
+                    size: 10,
+                    modified_unix: Some(100),
+                    algorithm: "blake3",
+                    scope: HashScope::Full,
+                },
                 "identity-full",
             )
             .unwrap();
@@ -902,23 +931,21 @@ mod tests {
             is_protected: false,
         };
 
-        let mut errors = Vec::new();
-        let mut cache_hits = 0;
-        let mut cache_misses = 0;
+        let mut stats = HashRunStats::default();
         let hashed = hash_files(
             Some(&cache),
             vec![renamed_entry.clone(), renamed_entry],
-            HashAlgorithm::Blake3,
-            0,
-            false,
-            0,
-            &mut errors,
-            &mut cache_hits,
-            &mut cache_misses,
+            HashRunOptions {
+                algorithm: HashAlgorithm::Blake3,
+                partial_bytes: 0,
+                partial: false,
+                modified_time_tolerance_secs: 0,
+            },
+            &mut stats,
         );
 
-        assert!(errors.is_empty());
-        assert_eq!(cache_hits, 2);
+        assert!(stats.errors.is_empty());
+        assert_eq!(stats.cache_hits, 2);
         assert_eq!(hashed.len(), 1);
 
         drop(cache);

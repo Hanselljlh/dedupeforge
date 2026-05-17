@@ -107,7 +107,7 @@ struct Cli {
     #[arg(long)]
     restore_manifest: Option<PathBuf>,
 
-    #[arg(long, value_enum, default_value_t = CliSelectionRule::KeepSuggested)]
+    #[arg(long, value_enum, default_value_t = CliSelectionRule::Suggested)]
     selection_rule: CliSelectionRule,
 
     #[arg(long, value_enum, default_value_t = CliActionKind::QuarantineMove)]
@@ -141,9 +141,12 @@ enum CliHash {
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum CliSelectionRule {
-    KeepSuggested,
-    KeepNewest,
-    KeepOldest,
+    #[value(name = "keep-suggested")]
+    Suggested,
+    #[value(name = "keep-newest")]
+    Newest,
+    #[value(name = "keep-oldest")]
+    Oldest,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -428,11 +431,7 @@ fn main() -> Result<()> {
     }
 
     if cli.action_plan {
-        let plan = build_dry_run_plan(
-            &report,
-            cli.selection_rule.into(),
-            cli.action_type.into(),
-        )?;
+        let plan = build_dry_run_plan(&report, cli.selection_rule.into(), cli.action_type.into())?;
         if cli.validate_action_plan {
             ensure_plan_valid(&plan)?;
         }
@@ -496,9 +495,9 @@ impl From<CliHash> for HashAlgorithm {
 impl From<CliSelectionRule> for SelectionRule {
     fn from(value: CliSelectionRule) -> Self {
         match value {
-            CliSelectionRule::KeepSuggested => SelectionRule::KeepSuggested,
-            CliSelectionRule::KeepNewest => SelectionRule::KeepNewest,
-            CliSelectionRule::KeepOldest => SelectionRule::KeepOldest,
+            CliSelectionRule::Suggested => SelectionRule::KeepSuggested,
+            CliSelectionRule::Newest => SelectionRule::KeepNewest,
+            CliSelectionRule::Oldest => SelectionRule::KeepOldest,
         }
     }
 }

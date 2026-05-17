@@ -159,6 +159,12 @@ pub struct GuiController {
     state: GuiSessionState,
 }
 
+impl Default for GuiController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GuiController {
     pub fn new() -> Self {
         Self {

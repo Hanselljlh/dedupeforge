@@ -1,7 +1,7 @@
 use crate::fs_walk::{collect_files, FileEntry};
 use crate::scan::{DuplicateGroup, DuplicateItem, MatchRisk, ScanConfig, ScanMode, ScanReport};
 use anyhow::Result;
-use dedupe_cache::{Cache, CacheLookupPolicy, HashScope};
+use dedupe_cache::{Cache, CacheHashKey, CacheLookupPolicy, HashScope};
 use dedupe_media::{
     analyze_audio, analyze_image, analyze_video, compare_hashes_hex, media_tools_available,
     probe_metadata, read_exif_date, supported_audio_extension, supported_image_extension,
@@ -688,12 +688,14 @@ fn image_record(
         image_cache_label(config.image_hash_size, config.image_rotation_invariant);
     if let Some(cache) = cache {
         if let Some(found) = cache.lookup_hash(
-            &file.path,
-            None,
-            file.size,
-            file.modified_unix,
-            &algorithm_label,
-            HashScope::Full,
+            &CacheHashKey {
+                path: &file.path,
+                identity: None,
+                size: file.size,
+                modified_unix: file.modified_unix,
+                algorithm: &algorithm_label,
+                scope: HashScope::Full,
+            },
             CacheLookupPolicy {
                 modified_time_tolerance_secs: config.cache.modified_time_tolerance_secs,
             },
@@ -713,12 +715,14 @@ fn image_record(
     )?;
     if let Some(cache) = cache {
         cache.store_hash(
-            &file.path,
-            None,
-            file.size,
-            file.modified_unix,
-            &algorithm_label,
-            HashScope::Full,
+            &CacheHashKey {
+                path: &file.path,
+                identity: None,
+                size: file.size,
+                modified_unix: file.modified_unix,
+                algorithm: &algorithm_label,
+                scope: HashScope::Full,
+            },
             &analysis.perceptual_hash_hex,
         )?;
     }
@@ -740,12 +744,14 @@ fn video_record(
     let algorithm_label = "video-sampled-fingerprint";
     if let Some(cache) = cache {
         if let Some(found) = cache.lookup_hash(
-            &file.path,
-            None,
-            file.size,
-            file.modified_unix,
-            algorithm_label,
-            HashScope::Full,
+            &CacheHashKey {
+                path: &file.path,
+                identity: None,
+                size: file.size,
+                modified_unix: file.modified_unix,
+                algorithm: algorithm_label,
+                scope: HashScope::Full,
+            },
             CacheLookupPolicy {
                 modified_time_tolerance_secs: config.cache.modified_time_tolerance_secs,
             },
@@ -762,12 +768,14 @@ fn video_record(
     let analysis = analyze_video(&file.path, tools)?;
     if let Some(cache) = cache {
         cache.store_hash(
-            &file.path,
-            None,
-            file.size,
-            file.modified_unix,
-            algorithm_label,
-            HashScope::Full,
+            &CacheHashKey {
+                path: &file.path,
+                identity: None,
+                size: file.size,
+                modified_unix: file.modified_unix,
+                algorithm: algorithm_label,
+                scope: HashScope::Full,
+            },
             &analysis.fingerprint_hex,
         )?;
     }
@@ -789,12 +797,14 @@ fn audio_record(
     let algorithm_label = "audio-fingerprint";
     if let Some(cache) = cache {
         if let Some(found) = cache.lookup_hash(
-            &file.path,
-            None,
-            file.size,
-            file.modified_unix,
-            algorithm_label,
-            HashScope::Full,
+            &CacheHashKey {
+                path: &file.path,
+                identity: None,
+                size: file.size,
+                modified_unix: file.modified_unix,
+                algorithm: algorithm_label,
+                scope: HashScope::Full,
+            },
             CacheLookupPolicy {
                 modified_time_tolerance_secs: config.cache.modified_time_tolerance_secs,
             },
@@ -814,12 +824,14 @@ fn audio_record(
     let analysis = analyze_audio(&file.path, tools)?;
     if let Some(cache) = cache {
         cache.store_hash(
-            &file.path,
-            None,
-            file.size,
-            file.modified_unix,
-            algorithm_label,
-            HashScope::Full,
+            &CacheHashKey {
+                path: &file.path,
+                identity: None,
+                size: file.size,
+                modified_unix: file.modified_unix,
+                algorithm: algorithm_label,
+                scope: HashScope::Full,
+            },
             &analysis.fingerprint_hex,
         )?;
     }
