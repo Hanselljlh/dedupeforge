@@ -1,0 +1,12 @@
+/target/
+**/*.rs.bk
+*.log
+.DS_Store
+Thumbs.db
+*.tmp
+*.sqlite
+*.sqlite3
+.dedupeforge-cache/
+.dedupeforge-quarantine/
+duplicates.json
+duplicates.csv
