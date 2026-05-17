@@ -90,6 +90,11 @@ If you do not use `nala`, replace `nala` with `apt`.
 cargo build --release
 ```
 
+Windows workspace note:
+
+- this repository includes [.cargo/config.toml](.cargo/config.toml) to route build artifacts to `C:\dedupeforge-target`, which avoids GNU linker failures when the repo path contains spaces
+- on Windows with the GNU Rust toolchain, use `scripts/test-windows.ps1` for a ready-made test command that sets the expected `HOME` and MSYS2 paths
+
 ## Run examples
 
 Scan one folder:
@@ -126,6 +131,12 @@ Export CSV:
 
 ```bash
 cargo run --release --bin dedupeforge -- /data/photos --output csv > duplicates.csv
+```
+
+Run tests on Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\test-windows.ps1
 ```
 
 ## Safety behavior
