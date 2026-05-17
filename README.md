@@ -10,7 +10,7 @@ The current repository is an MVP backend and CLI. It is intentionally non-destru
 
 ## Project status
 
-Current stage: **Phase 5 backend complete, GUI prototype still pending**
+Current stage: **Phase 7 complete through video and audio**
 
 Implemented:
 
@@ -33,15 +33,21 @@ Implemented:
 - restore from manifest
 - similar filename matching
 - duplicate folder matching
+- similar image matching
+- RAW + JPEG pair detection
+- EXIF-aware image matching reasons
+- cached perceptual image hashes
+- similar video matching
+- similar audio matching
+- FFmpeg/ffprobe dependency detection for media scans
+- cache-backed video and audio fingerprints
 - ignored file patterns for non-content scans
+- GUI session/controller crate scaffold
+- `egui` desktop prototype shell
 - human, JSON, and CSV output
 
 Not implemented yet:
 
-- GUI
-- similar image matching
-- similar video matching
-- music/audio matching
 - archive scanning
 
 ## Why this project exists
@@ -151,6 +157,30 @@ Run duplicate folder matching with ignored patterns:
 
 ```bash
 cargo run --release --bin dedupeforge -- /data/library --mode duplicate-folders --ignore-pattern "*.tmp" --ignore-pattern "*.bak"
+```
+
+Run similar image matching:
+
+```bash
+cargo run --release --bin dedupeforge -- /data/photos --mode similar-images --image-hamming-threshold 12
+```
+
+Run rotation-aware similar image matching with a larger perceptual hash:
+
+```bash
+cargo run --release --bin dedupeforge -- /data/photos --mode similar-images --image-hash-size 16 --image-rotation-invariant
+```
+
+Run similar video matching:
+
+```bash
+cargo run --release --bin dedupeforge -- /data/videos --mode similar-videos --media-duration-tolerance-secs 2
+```
+
+Run similar audio matching:
+
+```bash
+cargo run --release --bin dedupeforge -- /data/music --mode similar-audio --media-duration-tolerance-secs 2
 ```
 
 Use the network-tolerant cache preset for cross-system scans:
@@ -277,9 +307,29 @@ See [docs/engineering/SAFETY_MODEL.md](docs/engineering/SAFETY_MODEL.md).
 Current similarity behavior:
 
 - `--mode similar-names` is explainable but high risk and should be reviewed manually
+- `--mode similar-images` uses perceptual hashing and is high risk
+- `--mode similar-videos` uses sampled frame fingerprints and is high risk
+- `--mode similar-audio` uses sampled audio fingerprints and is high risk
 - `--mode duplicate-folders` uses file-tree overlap and is medium risk
 - thresholds are tunable with `--name-similarity-threshold` and `--folder-similarity-threshold`
+- image similarity is tunable with `--image-hash-size` and `--image-hamming-threshold`
+- image mode can use cache-backed perceptual hashes
+- video and audio modes can use cache-backed fingerprints
+- image mode can use rotation/flip-aware slower matching with `--image-rotation-invariant`
+- video and audio modes depend on `ffmpeg` and `ffprobe`, and report a clear dependency error when either is unavailable
+- video and audio matching use `--media-duration-tolerance-secs` to constrain duration drift
+- RAW + JPEG pairs are detected by normalized basename matching
 - ignored noise files can be excluded with `--ignore-pattern`
+
+Current GUI status:
+
+- `dedupe-gui` exists as a GUI-facing session/controller crate
+- it can run scans, build action plans, execute quarantine, restore manifests, and save/load GUI session state
+- an `egui`/`eframe` native desktop prototype is attached for scan setup, grouped results review, action planning, quarantine execution, and manifest restore
+- scan reports can be exported and reopened from the GUI
+- the results side panel now includes metadata and inline text/binary preview support
+- the GUI supports `similar-images` mode and shows an explicit false-positive warning for image matches
+- the GUI now exposes `similar-videos` and `similar-audio` modes and shows the same warning for media similarity scans
 
 ## Planned product modes
 

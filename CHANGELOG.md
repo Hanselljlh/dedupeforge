@@ -34,3 +34,14 @@ All notable changes to this project should be documented here.
 - added duplicate folder scan mode with thresholded file-tree overlap matching
 - added ignored file patterns for folder-oriented scans
 - added scan mode and match-risk reporting in CLI output
+- added `dedupe-gui` crate as the first GUI-facing session/controller layer
+- added serializable GUI session state and results view models over the shared backend
+- added an `egui`/`eframe` native desktop prototype wired to scan, results, action-plan, quarantine, and restore flows
+- added GUI report export/import and a results-side preview panel for metadata and inline text/binary inspection
+- added `dedupe-media` crate for perceptual image hashing and EXIF-aware image metadata
+- added `similar-images` scan mode with selectable hash size, Hamming threshold, and optional rotation/flip-aware matching
+- added RAW + JPEG pair detection by normalized basename
+- added cache-backed perceptual image hashes and GUI warnings for false-positive image matches
+- added FFmpeg/ffprobe-based `similar-videos` and `similar-audio` scan modes
+- added cache-backed sampled video and audio fingerprints plus duration-tolerance controls
+- added clear dependency reporting when media tools are unavailable and GUI support for the new media modes

@@ -1,6 +1,19 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+fn write_sample_png(path: &std::path::Path, seed: u8) {
+    use image::{ImageBuffer, Rgb};
+
+    let mut image = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(32, 32);
+    for (x, y, pixel) in image.enumerate_pixels_mut() {
+        let value = seed
+            .wrapping_add((x as u8).wrapping_mul(3))
+            .wrapping_add((y as u8).wrapping_mul(5));
+        *pixel = Rgb([value, value / 2, 255u8.wrapping_sub(value)]);
+    }
+    image.save(path).unwrap();
+}
+
 fn fixture_dir(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -155,6 +168,109 @@ fn duplicate_folder_mode_respects_ignore_patterns() {
     assert!(stdout.contains("file-tree overlap"));
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn similar_image_mode_reports_high_risk_matches() {
+    let root = std::env::temp_dir().join("dedupeforge-cli-similar-images");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    write_sample_png(&root.join("a.png"), 12);
+    std::fs::copy(root.join("a.png"), root.join("b.png")).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_dedupeforge"))
+        .arg(root.as_os_str())
+        .arg("--mode")
+        .arg("similar-images")
+        .arg("--image-hamming-threshold")
+        .arg("4")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Mode: similar-images"));
+    assert!(stdout.contains("Match risk: high"));
+    assert!(stdout.contains("perceptual hash distance"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn similar_image_mode_can_reuse_cached_image_hashes() {
+    let root = std::env::temp_dir().join("dedupeforge-cli-similar-images-cache");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let cache_path = root.join("images-cache.sqlite3");
+    write_sample_png(&root.join("a.png"), 22);
+    std::fs::copy(root.join("a.png"), root.join("b.png")).unwrap();
+
+    let first = Command::new(env!("CARGO_BIN_EXE_dedupeforge"))
+        .arg(root.as_os_str())
+        .arg("--mode")
+        .arg("similar-images")
+        .arg("--cache")
+        .arg("--cache-path")
+        .arg(cache_path.as_os_str())
+        .output()
+        .unwrap();
+    assert!(first.status.success());
+
+    let second = Command::new(env!("CARGO_BIN_EXE_dedupeforge"))
+        .arg(root.as_os_str())
+        .arg("--mode")
+        .arg("similar-images")
+        .arg("--cache")
+        .arg("--cache-path")
+        .arg(cache_path.as_os_str())
+        .output()
+        .unwrap();
+    assert!(second.status.success());
+
+    let stdout = String::from_utf8(second.stdout).unwrap();
+    assert!(stdout.contains("Cache hits:"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn similar_video_mode_reports_missing_dependency_clearly() {
+    let root = fixture_dir("exact-basic");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_dedupeforge"))
+        .arg(root.as_os_str())
+        .arg("--mode")
+        .arg("similar-videos")
+        .arg("--cache")
+        .env("DEDUPEFORGE_FFMPEG", "definitely-not-ffmpeg")
+        .env("DEDUPEFORGE_FFPROBE", "definitely-not-ffprobe")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Mode: similar-videos"));
+    assert!(stdout.contains("media dependency check failed"));
+}
+
+#[test]
+fn similar_audio_mode_reports_missing_dependency_clearly() {
+    let root = fixture_dir("exact-basic");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_dedupeforge"))
+        .arg(root.as_os_str())
+        .arg("--mode")
+        .arg("similar-audio")
+        .arg("--cache")
+        .env("DEDUPEFORGE_FFMPEG", "definitely-not-ffmpeg")
+        .env("DEDUPEFORGE_FFPROBE", "definitely-not-ffprobe")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Mode: similar-audio"));
+    assert!(stdout.contains("media dependency check failed"));
 }
 
 #[test]

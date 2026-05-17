@@ -1,0 +1,13 @@
+[package]
+name = "dedupe-media"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+blake3.workspace = true
+exif.workspace = true
+hex.workspace = true
+image.workspace = true
+serde.workspace = true

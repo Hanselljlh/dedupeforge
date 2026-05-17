@@ -1,6 +1,6 @@
 use crate::fs_walk::{collect_files, FileEntry, FileIdentity};
 use crate::hash::{hash_file, hash_file_prefix, HashAlgorithm};
-use crate::similar::{scan_duplicate_folders, scan_similar_names};
+use crate::similar::{scan_duplicate_folders, scan_similar_images, scan_similar_names};
 use crate::verify::files_equal;
 use anyhow::Result;
 use dedupe_cache::{Cache, CacheFileIdentity, CacheLookupPolicy, HashScope};
@@ -22,6 +22,11 @@ pub struct ScanConfig {
     pub cache: CacheConfig,
     pub name_similarity_threshold: u8,
     pub folder_similarity_threshold: u8,
+    pub image_hash_size: u32,
+    pub image_hamming_threshold: u32,
+    pub image_rotation_invariant: bool,
+    pub media_duration_tolerance_secs: f64,
+    pub media_fingerprint_distance_threshold: u32,
     pub ignore_patterns: Vec<String>,
 }
 
@@ -67,6 +72,9 @@ pub struct ScanReport {
 pub enum ScanMode {
     Exact,
     SimilarNames,
+    SimilarImages,
+    SimilarVideos,
+    SimilarAudio,
     DuplicateFolders,
 }
 
@@ -82,6 +90,9 @@ pub fn scan(config: &ScanConfig) -> Result<ScanReport> {
     match config.mode {
         ScanMode::Exact => scan_exact(config),
         ScanMode::SimilarNames => scan_similar_names(config),
+        ScanMode::SimilarImages => scan_similar_images(config),
+        ScanMode::SimilarVideos => crate::similar::scan_similar_videos(config),
+        ScanMode::SimilarAudio => crate::similar::scan_similar_audio(config),
         ScanMode::DuplicateFolders => scan_duplicate_folders(config),
     }
 }
@@ -455,6 +466,11 @@ mod tests {
             },
             name_similarity_threshold: 85,
             folder_similarity_threshold: 85,
+            image_hash_size: 8,
+            image_hamming_threshold: 12,
+            image_rotation_invariant: false,
+            media_duration_tolerance_secs: 2.0,
+            media_fingerprint_distance_threshold: 32,
             ignore_patterns: Vec::new(),
         };
 
@@ -500,6 +516,11 @@ mod tests {
             },
             name_similarity_threshold: 85,
             folder_similarity_threshold: 85,
+            image_hash_size: 8,
+            image_hamming_threshold: 12,
+            image_rotation_invariant: false,
+            media_duration_tolerance_secs: 2.0,
+            media_fingerprint_distance_threshold: 32,
             ignore_patterns: Vec::new(),
         };
 
@@ -537,6 +558,11 @@ mod tests {
             },
             name_similarity_threshold: 85,
             folder_similarity_threshold: 85,
+            image_hash_size: 8,
+            image_hamming_threshold: 12,
+            image_rotation_invariant: false,
+            media_duration_tolerance_secs: 2.0,
+            media_fingerprint_distance_threshold: 32,
             ignore_patterns: Vec::new(),
         };
 
@@ -639,6 +665,11 @@ mod tests {
             },
             name_similarity_threshold: 85,
             folder_similarity_threshold: 85,
+            image_hash_size: 8,
+            image_hamming_threshold: 12,
+            image_rotation_invariant: false,
+            media_duration_tolerance_secs: 2.0,
+            media_fingerprint_distance_threshold: 32,
             ignore_patterns: Vec::new(),
         };
 

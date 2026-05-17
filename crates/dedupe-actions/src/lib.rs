@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use dedupe_core::{DuplicateGroup, DuplicateItem, ScanReport};
+use dedupe_core::{DuplicateGroup, DuplicateItem, ScanMode, ScanReport};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -75,6 +75,10 @@ pub fn build_dry_run_quarantine_plan(
     report: &ScanReport,
     selection_rule: SelectionRule,
 ) -> Result<ActionPlan> {
+    if report.mode != ScanMode::Exact {
+        bail!("action plans are only supported for exact-mode scan results");
+    }
+
     let mut items = Vec::new();
     let mut protected_items_skipped = 0usize;
 
@@ -719,6 +723,17 @@ mod tests {
         assert!(plan.items[0].path.ends_with("older.txt"));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_non_exact_reports_for_action_planning() {
+        let mut report = sample_report();
+        report.mode = ScanMode::SimilarImages;
+
+        let err = build_dry_run_quarantine_plan(&report, SelectionRule::KeepSuggested).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("action plans are only supported for exact-mode scan results"));
     }
 
     #[test]

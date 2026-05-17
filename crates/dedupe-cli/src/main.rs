@@ -64,6 +64,21 @@ struct Cli {
     #[arg(long, default_value_t = 85)]
     folder_similarity_threshold: u8,
 
+    #[arg(long, default_value_t = 8)]
+    image_hash_size: u32,
+
+    #[arg(long, default_value_t = 12)]
+    image_hamming_threshold: u32,
+
+    #[arg(long, default_value_t = false)]
+    image_rotation_invariant: bool,
+
+    #[arg(long, default_value_t = 2.0)]
+    media_duration_tolerance_secs: f64,
+
+    #[arg(long, default_value_t = 32)]
+    media_fingerprint_distance_threshold: u32,
+
     #[arg(long, default_value_t = false)]
     clear_cache: bool,
 
@@ -117,6 +132,9 @@ enum CliSelectionRule {
 enum CliScanMode {
     Exact,
     SimilarNames,
+    SimilarImages,
+    SimilarVideos,
+    SimilarAudio,
     DuplicateFolders,
 }
 
@@ -153,6 +171,11 @@ struct ScanProfile {
     cache_mtime_tolerance_secs: Option<i64>,
     name_similarity_threshold: Option<u8>,
     folder_similarity_threshold: Option<u8>,
+    image_hash_size: Option<u32>,
+    image_hamming_threshold: Option<u32>,
+    image_rotation_invariant: Option<bool>,
+    media_duration_tolerance_secs: Option<f64>,
+    media_fingerprint_distance_threshold: Option<u32>,
     output: Option<OutputFormat>,
 }
 
@@ -166,20 +189,37 @@ fn main() -> Result<()> {
     if cli.clear_cache && cli.rebuild_cache {
         bail!("--clear-cache and --rebuild-cache cannot be used together");
     }
-    if effective_mode != CliScanMode::Exact
-        && (cli.cache
-            || cli.no_cache
-            || cli.cache_path.is_some()
-            || cli.clear_cache
-            || cli.rebuild_cache)
+    if !matches!(
+        effective_mode,
+        CliScanMode::Exact
+            | CliScanMode::SimilarImages
+            | CliScanMode::SimilarVideos
+            | CliScanMode::SimilarAudio
+    ) && (cli.cache
+        || cli.no_cache
+        || cli.cache_path.is_some()
+        || cli.clear_cache
+        || cli.rebuild_cache)
     {
-        bail!("cache options are only supported in --mode exact");
+        bail!(
+            "cache options are only supported in --mode exact, --mode similar-images, --mode similar-videos, or --mode similar-audio"
+        );
     }
     if cli.execute_action_plan && !cli.action_plan && cli.load_action_plan.is_none() {
         bail!("--execute-action-plan requires --action-plan");
     }
     if effective_mode != CliScanMode::Exact && cli.action_plan {
         bail!("action plans are only supported in --mode exact");
+    }
+    if profile.image_hash_size.unwrap_or(cli.image_hash_size) < 4 {
+        bail!("--image-hash-size must be at least 4");
+    }
+    if profile
+        .media_fingerprint_distance_threshold
+        .unwrap_or(cli.media_fingerprint_distance_threshold)
+        > 256
+    {
+        bail!("--media-fingerprint-distance-threshold must be between 0 and 256");
     }
     if cli.restore_manifest.is_some() && (!cli.paths.is_empty() || cli.action_plan) {
         bail!("--restore-manifest runs on its own and cannot be combined with scan/action-plan inputs");
@@ -273,6 +313,19 @@ fn main() -> Result<()> {
         folder_similarity_threshold: profile
             .folder_similarity_threshold
             .unwrap_or(cli.folder_similarity_threshold),
+        image_hash_size: profile.image_hash_size.unwrap_or(cli.image_hash_size),
+        image_hamming_threshold: profile
+            .image_hamming_threshold
+            .unwrap_or(cli.image_hamming_threshold),
+        image_rotation_invariant: profile
+            .image_rotation_invariant
+            .unwrap_or(cli.image_rotation_invariant),
+        media_duration_tolerance_secs: profile
+            .media_duration_tolerance_secs
+            .unwrap_or(cli.media_duration_tolerance_secs),
+        media_fingerprint_distance_threshold: profile
+            .media_fingerprint_distance_threshold
+            .unwrap_or(cli.media_fingerprint_distance_threshold),
     };
 
     let cache_path = resolved_cache_path(&config.cache);
@@ -366,6 +419,9 @@ impl From<CliScanMode> for ScanMode {
         match value {
             CliScanMode::Exact => ScanMode::Exact,
             CliScanMode::SimilarNames => ScanMode::SimilarNames,
+            CliScanMode::SimilarImages => ScanMode::SimilarImages,
+            CliScanMode::SimilarVideos => ScanMode::SimilarVideos,
+            CliScanMode::SimilarAudio => ScanMode::SimilarAudio,
             CliScanMode::DuplicateFolders => ScanMode::DuplicateFolders,
         }
     }
@@ -447,6 +503,9 @@ fn scan_mode_label(mode: ScanMode) -> &'static str {
     match mode {
         ScanMode::Exact => "exact",
         ScanMode::SimilarNames => "similar-names",
+        ScanMode::SimilarImages => "similar-images",
+        ScanMode::SimilarVideos => "similar-videos",
+        ScanMode::SimilarAudio => "similar-audio",
         ScanMode::DuplicateFolders => "duplicate-folders",
     }
 }

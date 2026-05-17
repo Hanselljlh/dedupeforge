@@ -1,6 +1,12 @@
 use crate::fs_walk::{collect_files, FileEntry};
 use crate::scan::{DuplicateGroup, DuplicateItem, MatchRisk, ScanConfig, ScanMode, ScanReport};
 use anyhow::Result;
+use dedupe_cache::{Cache, CacheLookupPolicy, HashScope};
+use dedupe_media::{
+    analyze_audio, analyze_image, analyze_video, compare_hashes_hex, media_tools_available,
+    probe_metadata, read_exif_date, supported_audio_extension, supported_image_extension,
+    supported_raw_extension, supported_video_extension, MediaToolConfig,
+};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -47,6 +53,141 @@ pub fn scan_duplicate_folders(config: &ScanConfig) -> Result<ScanReport> {
         duplicate_groups,
         errors: Vec::new(),
         risk: MatchRisk::Medium,
+    })
+}
+
+pub fn scan_similar_images(config: &ScanConfig) -> Result<ScanReport> {
+    let collected = collect_files(&config.paths, &config.protected_roots, config.ignore_hidden)?;
+    let cache = open_cache_if_enabled(&config.cache)?;
+    let files = collected
+        .files
+        .into_iter()
+        .filter(|f| f.size >= config.min_size)
+        .filter(|f| supported_image_extension(&f.path) || supported_raw_extension(&f.path))
+        .collect::<Vec<_>>();
+
+    let scanned_files = files.len();
+    let mut cache_hits = 0usize;
+    let mut cache_misses = 0usize;
+    let mut errors = collected.errors;
+    let duplicate_groups = group_similar_image_files(
+        cache.as_ref(),
+        &files,
+        config,
+        &mut errors,
+        &mut cache_hits,
+        &mut cache_misses,
+    );
+
+    Ok(ScanReport {
+        mode: ScanMode::SimilarImages,
+        scanned_files,
+        candidate_size_groups: 0,
+        cache_hits,
+        cache_misses,
+        duplicate_groups,
+        errors,
+        risk: MatchRisk::High,
+    })
+}
+
+pub fn scan_similar_videos(config: &ScanConfig) -> Result<ScanReport> {
+    let tools = MediaToolConfig::default();
+    if let Err(err) = media_tools_available(&tools) {
+        return Ok(ScanReport {
+            mode: ScanMode::SimilarVideos,
+            scanned_files: 0,
+            candidate_size_groups: 0,
+            cache_hits: 0,
+            cache_misses: 0,
+            duplicate_groups: Vec::new(),
+            errors: vec![format!("media dependency check failed: {err}")],
+            risk: MatchRisk::High,
+        });
+    }
+
+    let collected = collect_files(&config.paths, &config.protected_roots, config.ignore_hidden)?;
+    let cache = open_cache_if_enabled(&config.cache)?;
+    let files = collected
+        .files
+        .into_iter()
+        .filter(|f| f.size >= config.min_size)
+        .filter(|f| supported_video_extension(&f.path))
+        .collect::<Vec<_>>();
+
+    let scanned_files = files.len();
+    let mut cache_hits = 0usize;
+    let mut cache_misses = 0usize;
+    let mut errors = collected.errors;
+    let duplicate_groups = group_similar_video_files(
+        cache.as_ref(),
+        &files,
+        config,
+        &tools,
+        &mut errors,
+        &mut cache_hits,
+        &mut cache_misses,
+    );
+
+    Ok(ScanReport {
+        mode: ScanMode::SimilarVideos,
+        scanned_files,
+        candidate_size_groups: 0,
+        cache_hits,
+        cache_misses,
+        duplicate_groups,
+        errors,
+        risk: MatchRisk::High,
+    })
+}
+
+pub fn scan_similar_audio(config: &ScanConfig) -> Result<ScanReport> {
+    let tools = MediaToolConfig::default();
+    if let Err(err) = media_tools_available(&tools) {
+        return Ok(ScanReport {
+            mode: ScanMode::SimilarAudio,
+            scanned_files: 0,
+            candidate_size_groups: 0,
+            cache_hits: 0,
+            cache_misses: 0,
+            duplicate_groups: Vec::new(),
+            errors: vec![format!("media dependency check failed: {err}")],
+            risk: MatchRisk::High,
+        });
+    }
+
+    let collected = collect_files(&config.paths, &config.protected_roots, config.ignore_hidden)?;
+    let cache = open_cache_if_enabled(&config.cache)?;
+    let files = collected
+        .files
+        .into_iter()
+        .filter(|f| f.size >= config.min_size)
+        .filter(|f| supported_audio_extension(&f.path))
+        .collect::<Vec<_>>();
+
+    let scanned_files = files.len();
+    let mut cache_hits = 0usize;
+    let mut cache_misses = 0usize;
+    let mut errors = collected.errors;
+    let duplicate_groups = group_similar_audio_files(
+        cache.as_ref(),
+        &files,
+        config,
+        &tools,
+        &mut errors,
+        &mut cache_hits,
+        &mut cache_misses,
+    );
+
+    Ok(ScanReport {
+        mode: ScanMode::SimilarAudio,
+        scanned_files,
+        candidate_size_groups: 0,
+        cache_hits,
+        cache_misses,
+        duplicate_groups,
+        errors,
+        risk: MatchRisk::High,
     })
 }
 
@@ -105,6 +246,206 @@ fn group_similar_directories(
         .collect::<Vec<_>>();
 
     build_connected_groups(&as_files, adjacency, pair_reasons, "similar folder")
+}
+
+fn group_similar_image_files(
+    cache: Option<&Cache>,
+    files: &[FileEntry],
+    config: &ScanConfig,
+    errors: &mut Vec<String>,
+    cache_hits: &mut usize,
+    cache_misses: &mut usize,
+) -> Vec<DuplicateGroup> {
+    let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); files.len()];
+    let mut pair_reasons: HashMap<(usize, usize), (u8, String)> = HashMap::new();
+    let mut analyses: Vec<Option<ImageRecord>> = vec![None; files.len()];
+
+    for index in 0..files.len() {
+        if supported_image_extension(&files[index].path) {
+            match image_record(cache, &files[index], config, cache_hits, cache_misses) {
+                Ok(record) => analyses[index] = Some(record),
+                Err(err) => errors.push(format!("{}: {err}", files[index].path.display())),
+            }
+        }
+    }
+
+    for left in 0..files.len() {
+        for right in (left + 1)..files.len() {
+            if let Some(reason) = raw_jpeg_pair_reason(&files[left], &files[right]) {
+                adjacency[left].push(right);
+                adjacency[right].push(left);
+                pair_reasons.insert((left, right), (100, reason));
+                continue;
+            }
+
+            let (Some(left_record), Some(right_record)) = (&analyses[left], &analyses[right])
+            else {
+                continue;
+            };
+
+            let Ok(distance) = compare_hashes_hex(&left_record.hash_hex, &right_record.hash_hex)
+            else {
+                continue;
+            };
+            if distance <= config.image_hamming_threshold {
+                let score = similarity_score_from_distance(distance, config.image_hash_size);
+                let mut reason = format!(
+                    "similar image by perceptual hash distance {} ({}x{} aHash)",
+                    distance, config.image_hash_size, config.image_hash_size
+                );
+                if left_record.exif_date.is_some()
+                    && left_record.exif_date == right_record.exif_date
+                {
+                    reason.push_str(&format!(
+                        " with matching EXIF date {}",
+                        left_record.exif_date.clone().unwrap_or_default()
+                    ));
+                }
+                if config.image_rotation_invariant {
+                    reason.push_str("; rotation-aware comparison enabled");
+                }
+                adjacency[left].push(right);
+                adjacency[right].push(left);
+                pair_reasons.insert((left, right), (score, reason));
+            }
+        }
+    }
+
+    build_connected_groups(files, adjacency, pair_reasons, "similar image")
+}
+
+fn group_similar_video_files(
+    cache: Option<&Cache>,
+    files: &[FileEntry],
+    config: &ScanConfig,
+    tools: &MediaToolConfig,
+    errors: &mut Vec<String>,
+    cache_hits: &mut usize,
+    cache_misses: &mut usize,
+) -> Vec<DuplicateGroup> {
+    let mut records: Vec<Option<VideoRecord>> = vec![None; files.len()];
+    let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); files.len()];
+    let mut pair_reasons: HashMap<(usize, usize), (u8, String)> = HashMap::new();
+
+    for index in 0..files.len() {
+        match video_record(
+            cache,
+            &files[index],
+            config,
+            tools,
+            cache_hits,
+            cache_misses,
+        ) {
+            Ok(record) => records[index] = Some(record),
+            Err(err) => errors.push(format!("{}: {err}", files[index].path.display())),
+        }
+    }
+
+    for left in 0..files.len() {
+        for right in (left + 1)..files.len() {
+            let (Some(left_record), Some(right_record)) = (&records[left], &records[right]) else {
+                continue;
+            };
+            let duration_delta =
+                (left_record.duration_seconds - right_record.duration_seconds).abs();
+            if duration_delta > config.media_duration_tolerance_secs {
+                continue;
+            }
+
+            let Ok(distance) =
+                compare_hashes_hex(&left_record.fingerprint_hex, &right_record.fingerprint_hex)
+            else {
+                continue;
+            };
+            if !media_match_is_within_threshold(
+                distance,
+                config.media_fingerprint_distance_threshold,
+            ) {
+                continue;
+            }
+            let score = media_score_from_distance(distance);
+            let reason = format!(
+                "similar video by duration delta {:.2}s and sampled frame fingerprint distance {}",
+                duration_delta, distance
+            );
+            adjacency[left].push(right);
+            adjacency[right].push(left);
+            pair_reasons.insert((left, right), (score, reason));
+        }
+    }
+
+    build_connected_groups(files, adjacency, pair_reasons, "similar video")
+}
+
+fn group_similar_audio_files(
+    cache: Option<&Cache>,
+    files: &[FileEntry],
+    config: &ScanConfig,
+    tools: &MediaToolConfig,
+    errors: &mut Vec<String>,
+    cache_hits: &mut usize,
+    cache_misses: &mut usize,
+) -> Vec<DuplicateGroup> {
+    let mut records: Vec<Option<AudioRecord>> = vec![None; files.len()];
+    let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); files.len()];
+    let mut pair_reasons: HashMap<(usize, usize), (u8, String)> = HashMap::new();
+
+    for index in 0..files.len() {
+        match audio_record(
+            cache,
+            &files[index],
+            config,
+            tools,
+            cache_hits,
+            cache_misses,
+        ) {
+            Ok(record) => records[index] = Some(record),
+            Err(err) => errors.push(format!("{}: {err}", files[index].path.display())),
+        }
+    }
+
+    for left in 0..files.len() {
+        for right in (left + 1)..files.len() {
+            let (Some(left_record), Some(right_record)) = (&records[left], &records[right]) else {
+                continue;
+            };
+            let duration_delta =
+                (left_record.duration_seconds - right_record.duration_seconds).abs();
+            if duration_delta > config.media_duration_tolerance_secs {
+                continue;
+            }
+
+            let Ok(distance) =
+                compare_hashes_hex(&left_record.fingerprint_hex, &right_record.fingerprint_hex)
+            else {
+                continue;
+            };
+            if !media_match_is_within_threshold(
+                distance,
+                config.media_fingerprint_distance_threshold,
+            ) {
+                continue;
+            }
+            let score = media_score_from_distance(distance);
+            let metadata_basis = shared_audio_metadata(left_record, right_record);
+            let reason = if let Some(metadata_basis) = metadata_basis {
+                format!(
+                    "similar audio by duration delta {:.2}s, fingerprint distance {}, and metadata {}",
+                    duration_delta, distance, metadata_basis
+                )
+            } else {
+                format!(
+                    "similar audio by duration delta {:.2}s and audio fingerprint distance {}",
+                    duration_delta, distance
+                )
+            };
+            adjacency[left].push(right);
+            adjacency[right].push(left);
+            pair_reasons.insert((left, right), (score, reason));
+        }
+    }
+
+    build_connected_groups(files, adjacency, pair_reasons, "similar audio")
 }
 
 fn build_connected_groups(
@@ -220,6 +561,27 @@ fn file_stem_like(path: &Path) -> String {
         .to_string()
 }
 
+#[derive(Clone, Debug)]
+struct ImageRecord {
+    hash_hex: String,
+    exif_date: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct VideoRecord {
+    fingerprint_hex: String,
+    duration_seconds: f64,
+}
+
+#[derive(Clone, Debug)]
+struct AudioRecord {
+    fingerprint_hex: String,
+    duration_seconds: f64,
+    title: Option<String>,
+    artist: Option<String>,
+    album: Option<String>,
+}
+
 fn name_similarity_reason(left: &str, right: &str) -> (u8, String) {
     let left_normalized = normalize_name(left);
     let right_normalized = normalize_name(right);
@@ -270,6 +632,252 @@ fn normalize_name(value: &str) -> String {
     }
 
     normalized.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn raw_jpeg_pair_reason(left: &FileEntry, right: &FileEntry) -> Option<String> {
+    let left_raw = supported_raw_extension(&left.path);
+    let right_raw = supported_raw_extension(&right.path);
+    let left_jpeg = matches!(extension_value(&left.path).as_deref(), Some("jpg" | "jpeg"));
+    let right_jpeg = matches!(
+        extension_value(&right.path).as_deref(),
+        Some("jpg" | "jpeg")
+    );
+
+    let is_pair = (left_raw && right_jpeg) || (right_raw && left_jpeg);
+    if !is_pair {
+        return None;
+    }
+
+    let left_stem = normalize_name(&file_stem_like(&left.path));
+    let right_stem = normalize_name(&file_stem_like(&right.path));
+    if left_stem == right_stem {
+        Some(format!(
+            "RAW + JPEG pair by normalized basename ({} ~= {})",
+            left.path.display(),
+            right.path.display()
+        ))
+    } else {
+        None
+    }
+}
+
+fn similarity_score_from_distance(distance: u32, hash_size: u32) -> u8 {
+    let total_bits = hash_size.saturating_mul(hash_size).max(1);
+    let score = ((total_bits.saturating_sub(distance)) as f64 / total_bits as f64) * 100.0;
+    score.round() as u8
+}
+
+fn media_score_from_distance(distance: u32) -> u8 {
+    let max_bits = 256f64;
+    let score = ((max_bits - distance.min(256) as f64) / max_bits) * 100.0;
+    score.round() as u8
+}
+
+fn media_match_is_within_threshold(distance: u32, threshold: u32) -> bool {
+    distance <= threshold
+}
+
+fn image_record(
+    cache: Option<&Cache>,
+    file: &FileEntry,
+    config: &ScanConfig,
+    cache_hits: &mut usize,
+    cache_misses: &mut usize,
+) -> Result<ImageRecord> {
+    let algorithm_label =
+        image_cache_label(config.image_hash_size, config.image_rotation_invariant);
+    if let Some(cache) = cache {
+        if let Some(found) = cache.lookup_hash(
+            &file.path,
+            None,
+            file.size,
+            file.modified_unix,
+            &algorithm_label,
+            HashScope::Full,
+            CacheLookupPolicy {
+                modified_time_tolerance_secs: config.cache.modified_time_tolerance_secs,
+            },
+        )? {
+            *cache_hits += 1;
+            return Ok(ImageRecord {
+                hash_hex: found.hash,
+                exif_date: read_exif_date(&file.path).ok().flatten(),
+            });
+        }
+    }
+
+    let analysis = analyze_image(
+        &file.path,
+        config.image_hash_size,
+        config.image_rotation_invariant,
+    )?;
+    if let Some(cache) = cache {
+        cache.store_hash(
+            &file.path,
+            None,
+            file.size,
+            file.modified_unix,
+            &algorithm_label,
+            HashScope::Full,
+            &analysis.perceptual_hash_hex,
+        )?;
+    }
+    *cache_misses += 1;
+    Ok(ImageRecord {
+        hash_hex: analysis.perceptual_hash_hex,
+        exif_date: analysis.exif_date,
+    })
+}
+
+fn video_record(
+    cache: Option<&Cache>,
+    file: &FileEntry,
+    config: &ScanConfig,
+    tools: &MediaToolConfig,
+    cache_hits: &mut usize,
+    cache_misses: &mut usize,
+) -> Result<VideoRecord> {
+    let algorithm_label = "video-sampled-fingerprint";
+    if let Some(cache) = cache {
+        if let Some(found) = cache.lookup_hash(
+            &file.path,
+            None,
+            file.size,
+            file.modified_unix,
+            algorithm_label,
+            HashScope::Full,
+            CacheLookupPolicy {
+                modified_time_tolerance_secs: config.cache.modified_time_tolerance_secs,
+            },
+        )? {
+            *cache_hits += 1;
+            let metadata = probe_metadata(&file.path, tools)?;
+            return Ok(VideoRecord {
+                fingerprint_hex: found.hash,
+                duration_seconds: metadata.duration_seconds,
+            });
+        }
+    }
+
+    let analysis = analyze_video(&file.path, tools)?;
+    if let Some(cache) = cache {
+        cache.store_hash(
+            &file.path,
+            None,
+            file.size,
+            file.modified_unix,
+            algorithm_label,
+            HashScope::Full,
+            &analysis.fingerprint_hex,
+        )?;
+    }
+    *cache_misses += 1;
+    Ok(VideoRecord {
+        fingerprint_hex: analysis.fingerprint_hex,
+        duration_seconds: analysis.duration_seconds,
+    })
+}
+
+fn audio_record(
+    cache: Option<&Cache>,
+    file: &FileEntry,
+    config: &ScanConfig,
+    tools: &MediaToolConfig,
+    cache_hits: &mut usize,
+    cache_misses: &mut usize,
+) -> Result<AudioRecord> {
+    let algorithm_label = "audio-fingerprint";
+    if let Some(cache) = cache {
+        if let Some(found) = cache.lookup_hash(
+            &file.path,
+            None,
+            file.size,
+            file.modified_unix,
+            algorithm_label,
+            HashScope::Full,
+            CacheLookupPolicy {
+                modified_time_tolerance_secs: config.cache.modified_time_tolerance_secs,
+            },
+        )? {
+            *cache_hits += 1;
+            let metadata = probe_metadata(&file.path, tools)?;
+            return Ok(AudioRecord {
+                fingerprint_hex: found.hash,
+                duration_seconds: metadata.duration_seconds,
+                title: metadata.title,
+                artist: metadata.artist,
+                album: metadata.album,
+            });
+        }
+    }
+
+    let analysis = analyze_audio(&file.path, tools)?;
+    if let Some(cache) = cache {
+        cache.store_hash(
+            &file.path,
+            None,
+            file.size,
+            file.modified_unix,
+            algorithm_label,
+            HashScope::Full,
+            &analysis.fingerprint_hex,
+        )?;
+    }
+    *cache_misses += 1;
+    Ok(AudioRecord {
+        fingerprint_hex: analysis.fingerprint_hex,
+        duration_seconds: analysis.duration_seconds,
+        title: analysis.title,
+        artist: analysis.artist,
+        album: analysis.album,
+    })
+}
+
+fn image_cache_label(hash_size: u32, rotation_invariant: bool) -> String {
+    if rotation_invariant {
+        format!("image-ahash-{hash_size}-rot")
+    } else {
+        format!("image-ahash-{hash_size}")
+    }
+}
+
+fn shared_audio_metadata(left: &AudioRecord, right: &AudioRecord) -> Option<String> {
+    let mut parts = Vec::new();
+    if left.title.is_some() && left.title == right.title {
+        parts.push(format!("title={}", left.title.clone().unwrap_or_default()));
+    }
+    if left.artist.is_some() && left.artist == right.artist {
+        parts.push(format!(
+            "artist={}",
+            left.artist.clone().unwrap_or_default()
+        ));
+    }
+    if left.album.is_some() && left.album == right.album {
+        parts.push(format!("album={}", left.album.clone().unwrap_or_default()));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(", "))
+    }
+}
+
+fn extension_value(path: &Path) -> Option<String> {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+}
+
+fn open_cache_if_enabled(config: &crate::scan::CacheConfig) -> Result<Option<Cache>> {
+    if !config.enabled {
+        return Ok(None);
+    }
+
+    let path = config
+        .path
+        .as_deref()
+        .unwrap_or_else(|| Path::new(".dedupeforge-cache.sqlite3"));
+    Ok(Some(Cache::open(path)?))
 }
 
 fn tokenize_name(value: &str) -> BTreeSet<String> {
@@ -514,6 +1122,11 @@ mod tests {
             },
             name_similarity_threshold: 70,
             folder_similarity_threshold: 70,
+            image_hash_size: 8,
+            image_hamming_threshold: 12,
+            image_rotation_invariant: false,
+            media_duration_tolerance_secs: 2.0,
+            media_fingerprint_distance_threshold: 32,
             ignore_patterns: Vec::new(),
         }
     }
@@ -560,5 +1173,91 @@ mod tests {
             .contains("file-tree overlap"));
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn similar_image_scan_matches_identical_raster_images() {
+        use image::{ImageBuffer, Rgb};
+
+        let root = temp_dir("images");
+        let left = root.join("left.png");
+        let right = root.join("right.png");
+        let mut image = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(32, 32);
+        for (x, y, pixel) in image.enumerate_pixels_mut() {
+            let value = ((x * 5 + y * 3) % 255) as u8;
+            *pixel = Rgb([value, value / 2, 255 - value]);
+        }
+        image.save(&left).unwrap();
+        std::fs::copy(&left, &right).unwrap();
+
+        let mut config = base_config(&root);
+        config.mode = ScanMode::SimilarImages;
+        config.image_hamming_threshold = 4;
+
+        let report = scan_similar_images(&config).unwrap();
+
+        assert_eq!(report.mode, ScanMode::SimilarImages);
+        assert_eq!(report.risk, MatchRisk::High);
+        assert_eq!(report.duplicate_groups.len(), 1);
+        assert!(report.duplicate_groups[0]
+            .reason
+            .contains("perceptual hash distance"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn similar_image_scan_detects_raw_jpeg_pairs_by_basename() {
+        let root = temp_dir("raw-jpeg");
+        let raw = root.join("IMG_1234.CR2");
+        let jpeg = root.join("IMG-1234.jpg");
+        std::fs::write(&raw, b"raw").unwrap();
+        std::fs::write(&jpeg, b"jpeg").unwrap();
+
+        let mut config = base_config(&root);
+        config.mode = ScanMode::SimilarImages;
+
+        let report = scan_similar_images(&config).unwrap();
+
+        assert_eq!(report.duplicate_groups.len(), 1);
+        assert!(report.duplicate_groups[0]
+            .reason
+            .contains("RAW + JPEG pair"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn shared_audio_metadata_reports_matching_fields() {
+        let left = AudioRecord {
+            fingerprint_hex: "aa".to_string(),
+            duration_seconds: 10.0,
+            title: Some("Track".to_string()),
+            artist: Some("Artist".to_string()),
+            album: Some("Album".to_string()),
+        };
+        let right = AudioRecord {
+            fingerprint_hex: "bb".to_string(),
+            duration_seconds: 10.1,
+            title: Some("Track".to_string()),
+            artist: Some("Artist".to_string()),
+            album: None,
+        };
+
+        let summary = shared_audio_metadata(&left, &right).unwrap();
+        assert!(summary.contains("title=Track"));
+        assert!(summary.contains("artist=Artist"));
+    }
+
+    #[test]
+    fn media_score_decreases_with_distance() {
+        assert!(media_score_from_distance(0) > media_score_from_distance(64));
+    }
+
+    #[test]
+    fn video_and_audio_similarity_require_reasonable_fingerprint_distance() {
+        assert!(media_match_is_within_threshold(8, 8));
+        assert!(media_match_is_within_threshold(7, 8));
+        assert!(!media_match_is_within_threshold(9, 8));
     }
 }

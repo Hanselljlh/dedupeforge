@@ -39,18 +39,19 @@ Current decision:
 
 ## GUI
 
-- [ ] Choose GUI stack.
-- [ ] Create source selection screen.
-- [ ] Create scan profile screen.
-- [ ] Create result group table.
-- [ ] Create preview panel.
-- [ ] Create action queue screen.
+- [x] Create GUI-facing controller/session crate.
+- [x] Choose GUI stack.
+- [x] Create source selection screen.
+- [x] Create scan profile screen.
+- [x] Create result group table.
+- [x] Create preview panel.
+- [x] Create action queue screen.
 
 ## Future match engines
 
 - [x] Similar filename engine.
 - [x] Duplicate folder engine.
-- [ ] Similar image engine.
-- [ ] RAW + JPEG pair detection.
-- [ ] Similar video engine.
-- [ ] Similar music/audio engine.
+- [x] Similar image engine.
+- [x] RAW + JPEG pair detection.
+- [x] Similar video engine.
+- [x] Similar music/audio engine.

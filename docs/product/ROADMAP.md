@@ -80,7 +80,7 @@ Exit criteria:
 
 Goal: AllDup-style review UI backed by the same engine.
 
-Planned:
+Implemented:
 
 - source selection screen
 - scan profile screen
@@ -118,7 +118,7 @@ Exit criteria:
 
 Goal: photo cleanup workflows.
 
-Planned:
+Implemented:
 
 - perceptual hashing
 - selectable hash sizes
@@ -137,7 +137,7 @@ Exit criteria:
 
 Goal: large media library cleanup.
 
-Planned:
+Implemented:
 
 - FFmpeg/ffprobe integration
 - sampled video frame hashes
