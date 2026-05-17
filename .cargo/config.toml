@@ -1,6 +1,0 @@
-[build]
-target-dir = "C:/dedupeforge-target"
-
-[target.x86_64-pc-windows-gnu]
-linker = "C:/msys64/ucrt64/bin/gcc.exe"
-ar = "C:/msys64/ucrt64/bin/gcc-ar.exe"

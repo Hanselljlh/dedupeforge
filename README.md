@@ -92,8 +92,8 @@ cargo build --release
 
 Windows workspace note:
 
-- this repository includes [.cargo/config.toml](.cargo/config.toml) to route build artifacts to `C:\dedupeforge-target`, which avoids GNU linker failures when the repo path contains spaces
-- on Windows with the GNU Rust toolchain, use `scripts/test-windows.ps1` for a ready-made test command that sets the expected `HOME` and MSYS2 paths
+- on Windows with the GNU Rust toolchain, use `scripts/test-windows.ps1` for a ready-made test command that sets the expected `HOME`, `CARGO_TARGET_DIR`, linker, and MSYS2 paths
+- the script routes build artifacts to `C:\dedupeforge-target`, which avoids GNU linker failures when the repo path contains spaces
 
 ## Run examples
 

@@ -228,7 +228,7 @@ mod tests {
     #[test]
     fn rejects_missing_scan_roots() {
         let missing = std::env::temp_dir().join("dedupeforge-missing-root");
-        let err = collect_files(&[missing.clone()], &[], true).unwrap_err();
+        let err = collect_files(std::slice::from_ref(&missing), &[], true).unwrap_err();
 
         assert!(err.to_string().contains("scan root does not exist"));
     }
