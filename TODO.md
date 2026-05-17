@@ -5,8 +5,8 @@
 - [x] Add fixture-based tests for exact duplicate grouping.
 - [x] Add tests for protected-folder keep selection.
 - [x] Add tests for JSON and CSV output shape.
-- [ ] Add path canonicalization edge-case tests.
-- [ ] Add error test for unreadable files.
+- [x] Add path canonicalization edge-case tests.
+- [x] Add error test for unreadable files.
 - [x] Decide whether zero-byte files should be included by default.
 
 Current decision:

@@ -45,7 +45,9 @@ pub struct ScanReport {
 }
 
 pub fn scan_exact(config: &ScanConfig) -> Result<ScanReport> {
-    let files = collect_files(&config.paths, &config.protected_roots, config.ignore_hidden)?
+    let collected = collect_files(&config.paths, &config.protected_roots, config.ignore_hidden)?;
+    let files = collected
+        .files
         .into_iter()
         .filter(|f| f.size >= config.min_size)
         .collect::<Vec<_>>();
@@ -54,7 +56,7 @@ pub fn scan_exact(config: &ScanConfig) -> Result<ScanReport> {
     let by_size = group_by_size(files);
     let candidate_size_groups = by_size.values().filter(|g| g.len() > 1).count();
 
-    let mut errors = Vec::new();
+    let mut errors = collected.errors;
     let size_candidate_files: Vec<FileEntry> = by_size.into_values().flatten().collect();
     let partial_candidates = hash_files(
         size_candidate_files,
@@ -317,6 +319,62 @@ mod tests {
             report.duplicate_groups[0].reason,
             "same size + same full hash + byte-by-byte verified"
         );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn scan_continues_when_hashing_one_candidate_fails() {
+        let root = temp_dir("hash-error");
+        let archive = root.join("archive");
+        let current = root.join("current");
+        fs::create_dir_all(&archive).unwrap();
+        fs::create_dir_all(&current).unwrap();
+
+        let keep = archive.join("keep.txt");
+        let copy = current.join("copy.txt");
+        let missing = current.join("missing.txt");
+
+        fs::write(&keep, b"same").unwrap();
+        fs::write(&copy, b"same").unwrap();
+        fs::write(&missing, b"same").unwrap();
+
+        let mut candidate_files = vec![
+            FileEntry {
+                path: keep.clone(),
+                size: 4,
+                modified_unix: Some(1),
+                is_protected: true,
+            },
+            FileEntry {
+                path: copy.clone(),
+                size: 4,
+                modified_unix: Some(2),
+                is_protected: false,
+            },
+            FileEntry {
+                path: missing.clone(),
+                size: 4,
+                modified_unix: Some(3),
+                is_protected: false,
+            },
+        ];
+
+        fs::remove_file(&missing).unwrap();
+
+        let mut errors = Vec::new();
+        let hashed = hash_files(
+            std::mem::take(&mut candidate_files),
+            HashAlgorithm::Blake3,
+            0,
+            false,
+            &mut errors,
+        );
+
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("missing.txt"));
+        assert_eq!(hashed.len(), 1);
+        assert_eq!(hashed.values().next().unwrap().len(), 2);
 
         fs::remove_dir_all(root).unwrap();
     }

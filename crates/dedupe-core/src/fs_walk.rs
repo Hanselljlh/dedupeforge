@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,15 +13,26 @@ pub struct FileEntry {
     pub is_protected: bool,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct FileCollection {
+    pub files: Vec<FileEntry>,
+    pub errors: Vec<String>,
+}
+
 pub fn collect_files(
     paths: &[PathBuf],
     protected_roots: &[PathBuf],
     ignore_hidden: bool,
-) -> Result<Vec<FileEntry>> {
+) -> Result<FileCollection> {
     let protected_roots = canonicalize_existing_roots(protected_roots);
     let mut files = Vec::new();
+    let mut errors = Vec::new();
 
     for root in paths {
+        if !root.exists() {
+            anyhow::bail!("scan root does not exist: {}", root.display());
+        }
+
         let walker = WalkDir::new(root)
             .follow_links(false)
             .into_iter()
@@ -33,15 +44,24 @@ pub fn collect_files(
             });
 
         for entry in walker {
-            let entry =
-                entry.with_context(|| format!("failed to read entry under {}", root.display()))?;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => {
+                    errors.push(format!("failed to read entry under {}: {err}", root.display()));
+                    continue;
+                }
+            };
             if !entry.file_type().is_file() {
                 continue;
             }
 
-            let metadata = entry
-                .metadata()
-                .with_context(|| format!("failed to stat {}", entry.path().display()))?;
+            let metadata = match entry.metadata() {
+                Ok(metadata) => metadata,
+                Err(err) => {
+                    errors.push(format!("failed to stat {}: {err}", entry.path().display()));
+                    continue;
+                }
+            };
             let canonical_path =
                 fs::canonicalize(entry.path()).unwrap_or_else(|_| entry.path().to_path_buf());
             let modified_unix = metadata
@@ -62,7 +82,7 @@ pub fn collect_files(
         }
     }
 
-    Ok(files)
+    Ok(FileCollection { files, errors })
 }
 
 fn canonicalize_existing_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
@@ -113,8 +133,8 @@ mod tests {
         fs::write(&visible, b"visible").unwrap();
         fs::write(&hidden, b"hidden").unwrap();
 
-        let files = collect_files(std::slice::from_ref(&root), &[], true).unwrap();
-        let paths: Vec<_> = files.into_iter().map(|f| f.path).collect();
+        let collection = collect_files(std::slice::from_ref(&root), &[], true).unwrap();
+        let paths: Vec<_> = collection.files.into_iter().map(|f| f.path).collect();
 
         assert!(paths.iter().any(|p| p.ends_with("visible.txt")));
         assert!(!paths.iter().any(|p| p.ends_with(".hidden.txt")));
@@ -139,12 +159,70 @@ mod tests {
         )
         .unwrap();
 
-        let protected_file = files.iter().find(|f| f.path.ends_with("keep.txt")).unwrap();
-        let current_file = files.iter().find(|f| f.path.ends_with("copy.txt")).unwrap();
+        let protected_file = files
+            .files
+            .iter()
+            .find(|f| f.path.ends_with("keep.txt"))
+            .unwrap();
+        let current_file = files
+            .files
+            .iter()
+            .find(|f| f.path.ends_with("copy.txt"))
+            .unwrap();
 
         assert!(protected_file.is_protected);
         assert!(!current_file.is_protected);
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn canonicalizes_relative_protected_roots() {
+        let root = temp_dir("relative-protected");
+        let original_dir = std::env::current_dir().unwrap();
+        let protected = root.join("archive");
+        fs::create_dir_all(&protected).unwrap();
+        fs::write(protected.join("keep.txt"), b"same").unwrap();
+
+        std::env::set_current_dir(&root).unwrap();
+        let files = collect_files(&[PathBuf::from("archive")], &[PathBuf::from("archive")], true)
+            .unwrap();
+        std::env::set_current_dir(original_dir).unwrap();
+
+        let protected_file = files
+            .files
+            .iter()
+            .find(|f| f.path.file_name().and_then(|name| name.to_str()) == Some("keep.txt"))
+            .unwrap();
+        assert!(protected_file.is_protected);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn tolerates_nonexistent_protected_roots() {
+        let root = temp_dir("missing-protected");
+        fs::write(root.join("plain.txt"), b"same").unwrap();
+
+        let files = collect_files(
+            std::slice::from_ref(&root),
+            &[root.join("does-not-exist")],
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(files.files.len(), 1);
+        assert!(!files.files[0].is_protected);
+        assert!(files.errors.is_empty());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_missing_scan_roots() {
+        let missing = std::env::temp_dir().join("dedupeforge-missing-root");
+        let err = collect_files(&[missing.clone()], &[], true).unwrap_err();
+
+        assert!(err.to_string().contains("scan root does not exist"));
     }
 }
