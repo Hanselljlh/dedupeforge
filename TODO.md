@@ -48,8 +48,8 @@ Current decision:
 
 ## Future match engines
 
-- [ ] Similar filename engine.
-- [ ] Duplicate folder engine.
+- [x] Similar filename engine.
+- [x] Duplicate folder engine.
 - [ ] Similar image engine.
 - [ ] RAW + JPEG pair detection.
 - [ ] Similar video engine.

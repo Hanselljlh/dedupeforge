@@ -1,11 +1,11 @@
 use anyhow::{bail, Result};
 use clap::{Parser, ValueEnum};
 use dedupe_actions::{
-    build_dry_run_quarantine_plan, ensure_plan_valid, execute_quarantine_plan,
-    load_action_plan, render_human_manifest, render_human_plan, restore_from_manifest_path,
-    save_action_plan, SelectionRule,
+    build_dry_run_quarantine_plan, ensure_plan_valid, execute_quarantine_plan, load_action_plan,
+    render_human_manifest, render_human_plan, restore_from_manifest_path, save_action_plan,
+    SelectionRule,
 };
-use dedupe_core::{scan_exact, CacheConfig, HashAlgorithm, ScanConfig, ScanReport};
+use dedupe_core::{scan, CacheConfig, HashAlgorithm, MatchRisk, ScanConfig, ScanMode, ScanReport};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -15,6 +15,9 @@ use std::path::{Path, PathBuf};
 #[command(about = "MVP duplicate-file scanner with fast hash options and protected folders")]
 struct Cli {
     paths: Vec<PathBuf>,
+
+    #[arg(long, value_enum, default_value_t = CliScanMode::Exact)]
+    mode: CliScanMode,
 
     #[arg(long)]
     profile: Option<PathBuf>,
@@ -34,6 +37,9 @@ struct Cli {
     #[arg(long)]
     protected: Vec<PathBuf>,
 
+    #[arg(long)]
+    ignore_pattern: Vec<String>,
+
     #[arg(long, default_value_t = true)]
     ignore_hidden: bool,
 
@@ -51,6 +57,12 @@ struct Cli {
 
     #[arg(long, default_value_t = 0)]
     cache_mtime_tolerance_secs: i64,
+
+    #[arg(long, default_value_t = 85)]
+    name_similarity_threshold: u8,
+
+    #[arg(long, default_value_t = 85)]
+    folder_similarity_threshold: u8,
 
     #[arg(long, default_value_t = false)]
     clear_cache: bool,
@@ -100,6 +112,14 @@ enum CliSelectionRule {
     KeepOldest,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, ValueEnum, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+enum CliScanMode {
+    Exact,
+    SimilarNames,
+    DuplicateFolders,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
 enum OutputFormat {
@@ -118,9 +138,11 @@ enum ScanPreset {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct ScanProfile {
+    mode: Option<CliScanMode>,
     preset: Option<ScanPreset>,
     paths: Option<Vec<PathBuf>>,
     protected_roots: Option<Vec<PathBuf>>,
+    ignore_patterns: Option<Vec<String>>,
     algorithm: Option<HashAlgorithm>,
     partial_bytes: Option<u64>,
     min_size: Option<u64>,
@@ -129,6 +151,8 @@ struct ScanProfile {
     cache: Option<bool>,
     cache_path: Option<PathBuf>,
     cache_mtime_tolerance_secs: Option<i64>,
+    name_similarity_threshold: Option<u8>,
+    folder_similarity_threshold: Option<u8>,
     output: Option<OutputFormat>,
 }
 
@@ -137,17 +161,32 @@ fn main() -> Result<()> {
     let mut profile = load_profile(cli.profile.as_ref())?;
     let preset = cli.preset.or(profile.preset).unwrap_or(ScanPreset::Default);
     apply_preset_defaults(&mut profile, preset);
+    let effective_mode = profile.mode.unwrap_or(cli.mode);
 
     if cli.clear_cache && cli.rebuild_cache {
         bail!("--clear-cache and --rebuild-cache cannot be used together");
     }
+    if effective_mode != CliScanMode::Exact
+        && (cli.cache
+            || cli.no_cache
+            || cli.cache_path.is_some()
+            || cli.clear_cache
+            || cli.rebuild_cache)
+    {
+        bail!("cache options are only supported in --mode exact");
+    }
     if cli.execute_action_plan && !cli.action_plan && cli.load_action_plan.is_none() {
         bail!("--execute-action-plan requires --action-plan");
+    }
+    if effective_mode != CliScanMode::Exact && cli.action_plan {
+        bail!("action plans are only supported in --mode exact");
     }
     if cli.restore_manifest.is_some() && (!cli.paths.is_empty() || cli.action_plan) {
         bail!("--restore-manifest runs on its own and cannot be combined with scan/action-plan inputs");
     }
-    if cli.load_action_plan.is_some() && (!cli.paths.is_empty() || cli.action_plan || cli.restore_manifest.is_some()) {
+    if cli.load_action_plan.is_some()
+        && (!cli.paths.is_empty() || cli.action_plan || cli.restore_manifest.is_some())
+    {
         bail!("--load-action-plan runs on its own and cannot be combined with scan, action-plan generation, or restore inputs");
     }
 
@@ -198,11 +237,17 @@ fn main() -> Result<()> {
     }
 
     let config = ScanConfig {
+        mode: effective_mode.into(),
         paths,
         protected_roots: if cli.protected.is_empty() {
             profile.protected_roots.unwrap_or_default()
         } else {
             cli.protected
+        },
+        ignore_patterns: if cli.ignore_pattern.is_empty() {
+            profile.ignore_patterns.unwrap_or_default()
+        } else {
+            cli.ignore_pattern
         },
         algorithm: profile.algorithm.unwrap_or_else(|| cli.hash.into()),
         partial_bytes: profile.partial_bytes.unwrap_or(cli.partial_bytes),
@@ -222,6 +267,12 @@ fn main() -> Result<()> {
                 .cache_mtime_tolerance_secs
                 .unwrap_or(cli.cache_mtime_tolerance_secs),
         },
+        name_similarity_threshold: profile
+            .name_similarity_threshold
+            .unwrap_or(cli.name_similarity_threshold),
+        folder_similarity_threshold: profile
+            .folder_similarity_threshold
+            .unwrap_or(cli.folder_similarity_threshold),
     };
 
     let cache_path = resolved_cache_path(&config.cache);
@@ -236,7 +287,7 @@ fn main() -> Result<()> {
         clear_cache_file(&cache_path)?;
     }
 
-    let report = scan_exact(&config)?;
+    let report = scan(&config)?;
 
     if cli.action_plan {
         let plan = build_dry_run_quarantine_plan(&report, cli.selection_rule.into())?;
@@ -310,7 +361,19 @@ impl From<CliSelectionRule> for SelectionRule {
     }
 }
 
+impl From<CliScanMode> for ScanMode {
+    fn from(value: CliScanMode) -> Self {
+        match value {
+            CliScanMode::Exact => ScanMode::Exact,
+            CliScanMode::SimilarNames => ScanMode::SimilarNames,
+            CliScanMode::DuplicateFolders => ScanMode::DuplicateFolders,
+        }
+    }
+}
+
 fn print_human(report: &ScanReport) {
+    println!("Mode: {}", scan_mode_label(report.mode));
+    println!("Match risk: {}", match_risk_label(report.risk));
     println!("Scanned files: {}", report.scanned_files);
     println!(
         "Candidate same-size groups: {}",
@@ -351,6 +414,7 @@ fn print_json(report: &ScanReport) -> Result<()> {
 fn print_csv(report: &ScanReport) -> Result<()> {
     let mut writer = csv::Writer::from_writer(std::io::stdout());
     writer.write_record([
+        "mode",
         "group",
         "suggested_keep",
         "protected",
@@ -363,6 +427,7 @@ fn print_csv(report: &ScanReport) -> Result<()> {
     for (group_idx, group) in report.duplicate_groups.iter().enumerate() {
         for item in &group.items {
             writer.write_record([
+                scan_mode_label(report.mode).to_string(),
                 (group_idx + 1).to_string(),
                 item.suggested_keep.to_string(),
                 item.is_protected.to_string(),
@@ -376,6 +441,22 @@ fn print_csv(report: &ScanReport) -> Result<()> {
     }
     writer.flush()?;
     Ok(())
+}
+
+fn scan_mode_label(mode: ScanMode) -> &'static str {
+    match mode {
+        ScanMode::Exact => "exact",
+        ScanMode::SimilarNames => "similar-names",
+        ScanMode::DuplicateFolders => "duplicate-folders",
+    }
+}
+
+fn match_risk_label(risk: MatchRisk) -> &'static str {
+    match risk {
+        MatchRisk::Low => "low",
+        MatchRisk::Medium => "medium",
+        MatchRisk::High => "high",
+    }
 }
 
 fn load_profile(path: Option<&PathBuf>) -> Result<ScanProfile> {

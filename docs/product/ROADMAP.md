@@ -100,7 +100,7 @@ Exit criteria:
 
 Goal: handle non-content workflows.
 
-Planned:
+Implemented:
 
 - normalized filename matching
 - token matching

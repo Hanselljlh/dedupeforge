@@ -44,7 +44,9 @@ fn csv_output_contains_expected_headers() {
     assert!(output.status.success());
 
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.starts_with("group,suggested_keep,protected,size,algorithm,hash,reason,path"));
+    assert!(
+        stdout.starts_with("mode,group,suggested_keep,protected,size,algorithm,hash,reason,path")
+    );
     assert!(stdout.contains("same size + same full hash"));
 }
 
@@ -97,6 +99,62 @@ fn preset_can_enable_network_tolerant_cache_mode() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("Cache hits:"));
     assert!(stdout.contains("Cache misses:"));
+}
+
+#[test]
+fn similar_name_mode_reports_high_risk_matches() {
+    let root = std::env::temp_dir().join("dedupeforge-cli-similar-names");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("Vacation 2024.jpg"), b"a").unwrap();
+    std::fs::write(root.join("vacation-2024.JPG"), b"b").unwrap();
+    std::fs::write(root.join("invoice.pdf"), b"c").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_dedupeforge"))
+        .arg(root.as_os_str())
+        .arg("--mode")
+        .arg("similar-names")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Mode: similar-names"));
+    assert!(stdout.contains("Match risk: high"));
+    assert!(stdout.contains("Duplicate groups: 1"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn duplicate_folder_mode_respects_ignore_patterns() {
+    let root = std::env::temp_dir().join("dedupeforge-cli-duplicate-folders");
+    let _ = std::fs::remove_dir_all(&root);
+    let left = root.join("left");
+    let right = root.join("right");
+    std::fs::create_dir_all(&left).unwrap();
+    std::fs::create_dir_all(&right).unwrap();
+    std::fs::write(left.join("photo.jpg"), b"same").unwrap();
+    std::fs::write(right.join("photo.jpg"), b"diff").unwrap();
+    std::fs::write(left.join("skip.tmp"), b"noise").unwrap();
+    std::fs::write(right.join("skip.tmp"), b"other").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_dedupeforge"))
+        .arg(root.as_os_str())
+        .arg("--mode")
+        .arg("duplicate-folders")
+        .arg("--ignore-pattern")
+        .arg("*.tmp")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Mode: duplicate-folders"));
+    assert!(stdout.contains("Match risk: medium"));
+    assert!(stdout.contains("file-tree overlap"));
+
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

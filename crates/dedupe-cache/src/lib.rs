@@ -106,8 +106,7 @@ impl Cache {
             .optional()?;
 
         Ok(found.and_then(|(hash, cached_modified_unix)| {
-            modified_time_matches(modified_unix, cached_modified_unix, policy)
-                .then_some(hash)
+            modified_time_matches(modified_unix, cached_modified_unix, policy).then_some(hash)
         }))
     }
 

@@ -10,7 +10,7 @@ The current repository is an MVP backend and CLI. It is intentionally non-destru
 
 ## Project status
 
-Current stage: **Phase 3 complete, GUI prototype next**
+Current stage: **Phase 5 backend complete, GUI prototype still pending**
 
 Implemented:
 
@@ -31,6 +31,9 @@ Implemented:
 - undo manifest writing
 - action log writing
 - restore from manifest
+- similar filename matching
+- duplicate folder matching
+- ignored file patterns for non-content scans
 - human, JSON, and CSV output
 
 Not implemented yet:
@@ -39,7 +42,6 @@ Not implemented yet:
 - similar image matching
 - similar video matching
 - music/audio matching
-- duplicate folder matching
 - archive scanning
 
 ## Why this project exists
@@ -137,6 +139,18 @@ Export CSV:
 
 ```bash
 cargo run --release --bin dedupeforge -- /data/photos --output csv > duplicates.csv
+```
+
+Run similar filename matching:
+
+```bash
+cargo run --release --bin dedupeforge -- /data/photos --mode similar-names
+```
+
+Run duplicate folder matching with ignored patterns:
+
+```bash
+cargo run --release --bin dedupeforge -- /data/library --mode duplicate-folders --ignore-pattern "*.tmp" --ignore-pattern "*.bak"
 ```
 
 Use the network-tolerant cache preset for cross-system scans:
@@ -259,6 +273,13 @@ Current action behavior:
 - the planner prevents selecting every file in a duplicate group
 
 See [docs/engineering/SAFETY_MODEL.md](docs/engineering/SAFETY_MODEL.md).
+
+Current similarity behavior:
+
+- `--mode similar-names` is explainable but high risk and should be reviewed manually
+- `--mode duplicate-folders` uses file-tree overlap and is medium risk
+- thresholds are tunable with `--name-similarity-threshold` and `--folder-similarity-threshold`
+- ignored noise files can be excluded with `--ignore-pattern`
 
 ## Planned product modes
 

@@ -116,7 +116,10 @@ pub fn build_dry_run_quarantine_plan(
     })
 }
 
-pub fn execute_quarantine_plan(plan: &ActionPlan, quarantine_root: &Path) -> Result<ActionManifest> {
+pub fn execute_quarantine_plan(
+    plan: &ActionPlan,
+    quarantine_root: &Path,
+) -> Result<ActionManifest> {
     ensure_plan_valid(plan)?;
     fs::create_dir_all(quarantine_root).with_context(|| {
         format!(
@@ -242,7 +245,8 @@ fn selected_items(
     selection_rule: SelectionRule,
 ) -> impl Iterator<Item = &DuplicateItem> {
     let keep_index = keep_index_for_rule(group, selection_rule);
-    group.items
+    group
+        .items
         .iter()
         .enumerate()
         .filter(move |(idx, _)| *idx != keep_index)
@@ -311,16 +315,17 @@ fn validate_plan(report: &ScanReport, items: &[ActionItem]) -> ActionValidation 
 
     for (group_index, group) in report.duplicate_groups.iter().enumerate() {
         let group_id = format!("group-{group_index:04}");
-        let selected = items.iter().filter(|item| item.group_id == group_id).count();
+        let selected = items
+            .iter()
+            .filter(|item| item.group_id == group_id)
+            .count();
         if selected >= group.items.len() {
             errors.push(format!(
                 "{group_id} selects every item in the duplicate group"
             ));
         }
         if !group.items.iter().any(|item| item.suggested_keep) {
-            errors.push(format!(
-                "{group_id} does not retain a suggested keep item"
-            ));
+            errors.push(format!("{group_id} does not retain a suggested keep item"));
         }
     }
 
@@ -545,11 +550,12 @@ fn unix_now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dedupe_core::{DuplicateGroup, DuplicateItem, ScanReport};
+    use dedupe_core::{DuplicateGroup, DuplicateItem, MatchRisk, ScanMode, ScanReport};
     use std::path::PathBuf;
 
     fn sample_report() -> ScanReport {
         ScanReport {
+            mode: ScanMode::Exact,
             scanned_files: 2,
             candidate_size_groups: 1,
             cache_hits: 0,
@@ -577,6 +583,7 @@ mod tests {
                 ],
             }],
             errors: vec![],
+            risk: MatchRisk::Low,
         }
     }
 
@@ -676,6 +683,7 @@ mod tests {
         fs::write(root.join("newer.txt"), b"same").unwrap();
 
         let report = ScanReport {
+            mode: ScanMode::Exact,
             scanned_files: 2,
             candidate_size_groups: 1,
             cache_hits: 0,
@@ -703,6 +711,7 @@ mod tests {
                 ],
             }],
             errors: vec![],
+            risk: MatchRisk::Low,
         };
 
         let plan = build_dry_run_quarantine_plan(&report, SelectionRule::KeepNewest).unwrap();
@@ -774,16 +783,19 @@ mod tests {
 
         let loaded = load_action_plan(&path).unwrap();
         assert!(!loaded.validation.valid);
-        assert!(
-            loaded.validation.errors.iter().any(|err| err.contains("is unavailable"))
-        );
+        assert!(loaded
+            .validation
+            .errors
+            .iter()
+            .any(|err| err.contains("is unavailable")));
 
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn execute_quarantine_plan_revalidates_before_move() {
-        let root = std::env::temp_dir().join(format!("dedupe-actions-exec-revalidate-{}", unix_now()));
+        let root =
+            std::env::temp_dir().join(format!("dedupe-actions-exec-revalidate-{}", unix_now()));
         let quarantine_root = root.join(".quarantine");
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("keep.txt"), b"same").unwrap();

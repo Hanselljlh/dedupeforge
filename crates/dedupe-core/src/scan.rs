@@ -1,5 +1,6 @@
 use crate::fs_walk::{collect_files, FileEntry, FileIdentity};
 use crate::hash::{hash_file, hash_file_prefix, HashAlgorithm};
+use crate::similar::{scan_duplicate_folders, scan_similar_names};
 use crate::verify::files_equal;
 use anyhow::Result;
 use dedupe_cache::{Cache, CacheFileIdentity, CacheLookupPolicy, HashScope};
@@ -10,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ScanConfig {
+    pub mode: ScanMode,
     pub paths: Vec<PathBuf>,
     pub protected_roots: Vec<PathBuf>,
     pub algorithm: HashAlgorithm,
@@ -18,6 +20,9 @@ pub struct ScanConfig {
     pub ignore_hidden: bool,
     pub byte_verify: bool,
     pub cache: CacheConfig,
+    pub name_similarity_threshold: u8,
+    pub folder_similarity_threshold: u8,
+    pub ignore_patterns: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -47,12 +52,38 @@ pub struct DuplicateGroup {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ScanReport {
+    pub mode: ScanMode,
     pub scanned_files: usize,
     pub candidate_size_groups: usize,
     pub cache_hits: usize,
     pub cache_misses: usize,
     pub duplicate_groups: Vec<DuplicateGroup>,
     pub errors: Vec<String>,
+    pub risk: MatchRisk,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ScanMode {
+    Exact,
+    SimilarNames,
+    DuplicateFolders,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum MatchRisk {
+    Low,
+    Medium,
+    High,
+}
+
+pub fn scan(config: &ScanConfig) -> Result<ScanReport> {
+    match config.mode {
+        ScanMode::Exact => scan_exact(config),
+        ScanMode::SimilarNames => scan_similar_names(config),
+        ScanMode::DuplicateFolders => scan_duplicate_folders(config),
+    }
 }
 
 pub fn scan_exact(config: &ScanConfig) -> Result<ScanReport> {
@@ -128,12 +159,14 @@ pub fn scan_exact(config: &ScanConfig) -> Result<ScanReport> {
     });
 
     Ok(ScanReport {
+        mode: ScanMode::Exact,
         scanned_files,
         candidate_size_groups,
         cache_hits,
         cache_misses,
         duplicate_groups,
         errors,
+        risk: MatchRisk::Low,
     })
 }
 
@@ -240,19 +273,17 @@ fn hash_with_cache(
     let label = algorithm.label();
 
     if let Some(cache) = cache {
-        if let Some(found) =
-            cache.lookup_hash(
-                &file.path,
-                cache_identity(file).as_ref(),
-                file.size,
-                file.modified_unix,
-                label,
-                scope,
-                CacheLookupPolicy {
-                    modified_time_tolerance_secs,
-                },
-            )?
-        {
+        if let Some(found) = cache.lookup_hash(
+            &file.path,
+            cache_identity(file).as_ref(),
+            file.size,
+            file.modified_unix,
+            label,
+            scope,
+            CacheLookupPolicy {
+                modified_time_tolerance_secs,
+            },
+        )? {
             cache.mark_seen(&file.path)?;
             return Ok((found.hash, true));
         }
@@ -409,6 +440,7 @@ mod tests {
         fs::write(current.join("unique.jpg"), b"unique-content!").unwrap();
 
         let config = ScanConfig {
+            mode: ScanMode::Exact,
             paths: vec![root.clone()],
             protected_roots: vec![archive.clone()],
             algorithm: HashAlgorithm::Blake3,
@@ -421,6 +453,9 @@ mod tests {
                 path: None,
                 modified_time_tolerance_secs: 0,
             },
+            name_similarity_threshold: 85,
+            folder_similarity_threshold: 85,
+            ignore_patterns: Vec::new(),
         };
 
         let report = scan_exact(&config).unwrap();
@@ -450,6 +485,7 @@ mod tests {
         fs::write(root.join("b.bin"), b"verified-content").unwrap();
 
         let config = ScanConfig {
+            mode: ScanMode::Exact,
             paths: vec![root.clone()],
             protected_roots: vec![],
             algorithm: HashAlgorithm::Sha256,
@@ -462,6 +498,9 @@ mod tests {
                 path: None,
                 modified_time_tolerance_secs: 0,
             },
+            name_similarity_threshold: 85,
+            folder_similarity_threshold: 85,
+            ignore_patterns: Vec::new(),
         };
 
         let report = scan_exact(&config).unwrap();
@@ -483,6 +522,7 @@ mod tests {
         fs::write(root.join("b.bin"), b"same-bytes").unwrap();
 
         let config = ScanConfig {
+            mode: ScanMode::Exact,
             paths: vec![root.clone()],
             protected_roots: vec![],
             algorithm: HashAlgorithm::Blake3,
@@ -495,6 +535,9 @@ mod tests {
                 path: Some(cache_path),
                 modified_time_tolerance_secs: 0,
             },
+            name_similarity_threshold: 85,
+            folder_similarity_threshold: 85,
+            ignore_patterns: Vec::new(),
         };
 
         let first = scan_exact(&config).unwrap();
@@ -581,6 +624,7 @@ mod tests {
         fs::write(&second, b"same-bytes").unwrap();
 
         let base = ScanConfig {
+            mode: ScanMode::Exact,
             paths: vec![root.clone()],
             protected_roots: vec![],
             algorithm: HashAlgorithm::Blake3,
@@ -593,6 +637,9 @@ mod tests {
                 path: Some(cache_path.clone()),
                 modified_time_tolerance_secs: 0,
             },
+            name_similarity_threshold: 85,
+            folder_similarity_threshold: 85,
+            ignore_patterns: Vec::new(),
         };
 
         let _ = scan_exact(&base).unwrap();

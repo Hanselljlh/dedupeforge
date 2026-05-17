@@ -30,3 +30,7 @@ All notable changes to this project should be documented here.
 
 - GUI
 - similar image/video/music engines
+- added similar filename scan mode with normalized, token, and edit-distance matching
+- added duplicate folder scan mode with thresholded file-tree overlap matching
+- added ignored file patterns for folder-oriented scans
+- added scan mode and match-risk reporting in CLI output
