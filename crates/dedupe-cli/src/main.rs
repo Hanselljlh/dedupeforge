@@ -86,7 +86,10 @@ impl From<CliHash> for HashAlgorithm {
 
 fn print_human(report: &ScanReport) {
     println!("Scanned files: {}", report.scanned_files);
-    println!("Candidate same-size groups: {}", report.candidate_size_groups);
+    println!(
+        "Candidate same-size groups: {}",
+        report.candidate_size_groups
+    );
     println!("Duplicate groups: {}", report.duplicate_groups.len());
 
     if !report.errors.is_empty() {
@@ -97,7 +100,13 @@ fn print_human(report: &ScanReport) {
     }
 
     for (idx, group) in report.duplicate_groups.iter().enumerate() {
-        println!("\nGroup {} | size={} | {} | {}", idx + 1, group.size, group.algorithm, group.reason);
+        println!(
+            "\nGroup {} | size={} | {} | {}",
+            idx + 1,
+            group.size,
+            group.algorithm,
+            group.reason
+        );
         for item in &group.items {
             let marker = if item.suggested_keep { "KEEP" } else { "DUP " };
             let protected = if item.is_protected { " protected" } else { "" };
@@ -113,7 +122,16 @@ fn print_json(report: &ScanReport) -> Result<()> {
 
 fn print_csv(report: &ScanReport) -> Result<()> {
     let mut writer = csv::Writer::from_writer(std::io::stdout());
-    writer.write_record(["group", "suggested_keep", "protected", "size", "algorithm", "hash", "reason", "path"])?;
+    writer.write_record([
+        "group",
+        "suggested_keep",
+        "protected",
+        "size",
+        "algorithm",
+        "hash",
+        "reason",
+        "path",
+    ])?;
     for (group_idx, group) in report.duplicate_groups.iter().enumerate() {
         for item in &group.items {
             writer.write_record([
