@@ -1,6 +1,6 @@
 use anyhow::Result;
 use dedupe_actions::{
-    build_dry_run_quarantine_plan, execute_quarantine_plan, restore_from_manifest_path,
+    build_dry_run_plan, execute_quarantine_plan, restore_from_manifest_path, ActionKind,
     ActionManifest, ActionPlan, SelectionRule,
 };
 use dedupe_core::{
@@ -261,7 +261,11 @@ impl GuiController {
         self.scan_runtime.is_some()
     }
 
-    pub fn build_action_plan(&mut self, selection_rule: SelectionRule) -> Result<&ActionPlan> {
+    pub fn build_action_plan(
+        &mut self,
+        selection_rule: SelectionRule,
+        action_kind: ActionKind,
+    ) -> Result<&ActionPlan> {
         let report = self
             .state
             .last_report
@@ -270,10 +274,10 @@ impl GuiController {
         if report.mode != ScanMode::Exact {
             anyhow::bail!("action plans are only supported for exact-mode scan results");
         }
-        let plan = build_dry_run_quarantine_plan(report, selection_rule)?;
+        let plan = build_dry_run_plan(report, selection_rule, action_kind)?;
         self.state.status_message = format!(
-            "Action plan ready: {} selected items",
-            plan.summary.items_selected
+            "Action plan ready: {} selected items ({})",
+            plan.summary.items_selected, plan.action_kind
         );
         self.state.last_manifest = None;
         self.state.last_action_plan = Some(plan);
@@ -604,7 +608,7 @@ mod tests {
         }
 
         let plan = controller
-            .build_action_plan(SelectionRule::KeepSuggested)
+            .build_action_plan(SelectionRule::KeepSuggested, ActionKind::QuarantineMove)
             .unwrap();
         assert_eq!(plan.summary.items_selected, 1);
 
@@ -626,7 +630,7 @@ mod tests {
         }
 
         let err = controller
-            .build_action_plan(SelectionRule::KeepSuggested)
+            .build_action_plan(SelectionRule::KeepSuggested, ActionKind::QuarantineMove)
             .unwrap_err();
         assert!(err
             .to_string()
@@ -675,6 +679,29 @@ mod tests {
     }
 
     #[test]
+    fn gui_controller_can_build_hardlink_plan_from_exact_scan() {
+        let root = temp_dir("plan-hardlink");
+        fs::write(root.join("a.txt"), b"same").unwrap();
+        fs::write(root.join("b.txt"), b"same").unwrap();
+
+        let mut controller = GuiController::new();
+        controller.state_mut().profile.paths = vec![root.clone()];
+        controller.run_scan().unwrap();
+        while controller.is_scan_in_progress() {
+            controller.poll_scan_progress().unwrap();
+        }
+
+        let plan = controller
+            .build_action_plan(SelectionRule::KeepSuggested, ActionKind::HardlinkReplace)
+            .unwrap();
+        assert_eq!(plan.action_kind, "hardlink_replace");
+        assert_eq!(plan.summary.items_selected, 1);
+        assert!(plan.items[0].replacement_target.is_some());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn preview_data_reads_text_files() {
         let root = temp_dir("preview");
         let file_path = root.join("note.txt");
@@ -710,9 +737,16 @@ mod tests {
         });
 
         assert_eq!(preview.preview_kind, "image");
-        assert!(preview.image_width.is_some_and(|width| width > 0 && width <= 320));
-        assert!(preview.image_height.is_some_and(|height| height > 0 && height <= 320));
-        assert!(preview.image_rgba.as_ref().is_some_and(|rgba| !rgba.is_empty()));
+        assert!(preview
+            .image_width
+            .is_some_and(|width| width > 0 && width <= 320));
+        assert!(preview
+            .image_height
+            .is_some_and(|height| height > 0 && height <= 320));
+        assert!(preview
+            .image_rgba
+            .as_ref()
+            .is_some_and(|rgba| !rgba.is_empty()));
         assert_eq!(
             preview.image_rgba.as_ref().unwrap().len(),
             preview.image_width.unwrap() * preview.image_height.unwrap() * 4
