@@ -102,6 +102,9 @@ pub struct ResultsViewModel {
     pub mode: ScanMode,
     pub risk_label: String,
     pub summary_line: String,
+    pub scanned_files: usize,
+    pub cache_hits: usize,
+    pub cache_misses: usize,
     pub group_count: usize,
     pub groups: Vec<GroupViewModel>,
     pub errors: Vec<String>,
@@ -543,6 +546,9 @@ pub fn report_to_view_model(report: &ScanReport) -> ResultsViewModel {
             report.duplicate_groups.len(),
             report.scanned_files
         ),
+        scanned_files: report.scanned_files,
+        cache_hits: report.cache_hits,
+        cache_misses: report.cache_misses,
         group_count: report.duplicate_groups.len(),
         groups: report
             .duplicate_groups
@@ -764,6 +770,8 @@ mod tests {
 
         let view = controller.results_view_model().unwrap();
         assert_eq!(view.group_count, 1);
+        assert_eq!(view.scanned_files, 2);
+        assert_eq!(view.cache_hits, 0);
 
         let _ = fs::remove_dir_all(root);
     }
