@@ -1,4 +1,4 @@
-use dedupe_actions::SelectionRule;
+use dedupe_actions::{ActionKind, SelectionRule};
 use dedupe_core::{HashAlgorithm, ScanMode};
 use dedupe_gui::{GroupViewModel, GuiController, PreviewData};
 use eframe::egui;
@@ -32,6 +32,7 @@ struct DedupeForgeApp {
     report_path_text: String,
     manifest_path_text: String,
     selection_rule: SelectionRule,
+    action_kind: ActionKind,
     selected_group_index: usize,
     selected_item_index: usize,
     error_message: String,
@@ -53,6 +54,7 @@ impl Default for DedupeForgeApp {
             report_path_text: "dedupeforge-report.json".to_string(),
             manifest_path_text: String::new(),
             selection_rule: SelectionRule::KeepSuggested,
+            action_kind: ActionKind::QuarantineMove,
             selected_group_index: 0,
             selected_item_index: 0,
             error_message: String::new(),
@@ -99,7 +101,10 @@ impl DedupeForgeApp {
     }
 
     fn build_action_plan(&mut self) {
-        match self.controller.build_action_plan(self.selection_rule) {
+        match self
+            .controller
+            .build_action_plan(self.selection_rule, self.action_kind)
+        {
             Ok(_) => self.error_message.clear(),
             Err(err) => self.error_message = err.to_string(),
         }
@@ -387,10 +392,32 @@ impl eframe::App for DedupeForgeApp {
                             );
                         });
                 });
+                ui.horizontal(|ui| {
+                    ui.label("Action Type");
+                    egui::ComboBox::from_id_salt("action_kind")
+                        .selected_text(action_kind_label(self.action_kind))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.action_kind,
+                                ActionKind::QuarantineMove,
+                                "Quarantine move",
+                            );
+                            ui.selectable_value(
+                                &mut self.action_kind,
+                                ActionKind::HardlinkReplace,
+                                "Hardlink replace",
+                            );
+                            ui.selectable_value(
+                                &mut self.action_kind,
+                                ActionKind::SymlinkReplace,
+                                "Symlink replace",
+                            );
+                        });
+                });
                 if !exact_mode_actions {
                     ui.colored_label(
                         egui::Color32::from_rgb(196, 110, 32),
-                        "Action plans and quarantine are only enabled for exact duplicate scans.",
+                        "Action plans and file replacement actions are only enabled for exact duplicate scans.",
                     );
                 }
                 if ui
@@ -402,7 +429,10 @@ impl eframe::App for DedupeForgeApp {
                 ui.label("Quarantine Root");
                 ui.text_edit_singleline(&mut self.quarantine_root_text);
                 if ui
-                    .add_enabled(exact_mode_actions, egui::Button::new("Execute Quarantine"))
+                    .add_enabled(
+                        exact_mode_actions,
+                        egui::Button::new(execute_action_button_label(self.action_kind)),
+                    )
                     .clicked()
                 {
                     self.execute_action_plan();
@@ -524,6 +554,10 @@ impl eframe::App for DedupeForgeApp {
                 ui.label(format!(
                     "{} items selected across {} groups",
                     plan.summary.items_selected, plan.summary.groups_considered
+                ));
+                ui.label(format!(
+                    "Action: {} | Keep rule: {}",
+                    plan.action_kind, plan.selection_rule
                 ));
                 if !plan.validation.valid {
                     ui.colored_label(
@@ -716,6 +750,22 @@ fn selection_rule_label(rule: SelectionRule) -> &'static str {
         SelectionRule::KeepSuggested => "Keep suggested",
         SelectionRule::KeepNewest => "Keep newest",
         SelectionRule::KeepOldest => "Keep oldest",
+    }
+}
+
+fn action_kind_label(kind: ActionKind) -> &'static str {
+    match kind {
+        ActionKind::QuarantineMove => "Quarantine move",
+        ActionKind::HardlinkReplace => "Hardlink replace",
+        ActionKind::SymlinkReplace => "Symlink replace",
+    }
+}
+
+fn execute_action_button_label(kind: ActionKind) -> &'static str {
+    match kind {
+        ActionKind::QuarantineMove => "Execute Quarantine",
+        ActionKind::HardlinkReplace => "Execute Hardlink Replace",
+        ActionKind::SymlinkReplace => "Execute Symlink Replace",
     }
 }
 
