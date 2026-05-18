@@ -17,6 +17,12 @@ A helper script is available:
 ./scripts/dev-check.sh
 ```
 
+On Windows with the GNU Rust toolchain, use:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\test-windows.ps1
+```
+
 ## Project rules
 
 - Do not add destructive file actions without tests and safety documentation.
@@ -35,6 +41,17 @@ Before opening a PR:
 - new behavior is documented
 - safety implications are described
 - output format changes are noted in `CHANGELOG.md`
+
+## Ownership and review
+
+- See `.github/CODEOWNERS` for the default review ownership map.
+- Keep PRs focused when possible so scan, action, and GUI changes are easier to review safely.
+
+## Versioning and release notes
+
+- Keep user-visible behavior changes listed in `CHANGELOG.md`.
+- Treat JSON, CSV, manifest, and action-plan shape changes as release-note-worthy.
+- Call out safety-model changes explicitly in PR descriptions and release notes.
 
 ## Commit message style
 
