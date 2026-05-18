@@ -1,5 +1,5 @@
 use dedupe_actions::{ActionKind, SelectionRule};
-use dedupe_core::{HashAlgorithm, ScanMode};
+use dedupe_core::{HashAlgorithm, ScanMode, ScanProgressPhase};
 use dedupe_gui::{GroupViewModel, GuiController, PreviewData, ResultsViewModel};
 use eframe::egui;
 use eframe::egui::{ColorImage, TextureHandle, TextureOptions};
@@ -99,6 +99,12 @@ impl DedupeForgeApp {
                 self.selected_item_index = 0;
             }
             Err(err) => self.error_message = err.to_string(),
+        }
+    }
+
+    fn cancel_scan(&mut self) {
+        if self.controller.cancel_scan() {
+            self.error_message.clear();
         }
     }
 
@@ -358,15 +364,39 @@ impl eframe::App for DedupeForgeApp {
 
                 ui.add_space(8.0);
                 let scan_in_progress = self.controller.is_scan_in_progress();
-                if ui
-                    .add_enabled(!scan_in_progress, egui::Button::new(if scan_in_progress {
-                        "Scanning..."
-                    } else {
-                        "Run Scan"
-                    }))
-                    .clicked()
-                {
-                    self.run_scan();
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(!scan_in_progress, egui::Button::new(if scan_in_progress {
+                            "Scanning..."
+                        } else {
+                            "Run Scan"
+                        }))
+                        .clicked()
+                    {
+                        self.run_scan();
+                    }
+                    if ui
+                        .add_enabled(scan_in_progress, egui::Button::new("Stop Scan"))
+                        .clicked()
+                    {
+                        self.cancel_scan();
+                    }
+                });
+
+                if let Some(progress) = self.controller.state().scan_progress.as_ref() {
+                    ui.add_space(6.0);
+                    let fraction = progress_fraction(progress.phase, progress.current, progress.total);
+                    ui.add(
+                        egui::ProgressBar::new(fraction)
+                            .show_percentage()
+                            .text(progress.message.as_str()),
+                    );
+                    ui.label(format!(
+                        "Phase: {} | {}/{}",
+                        progress_phase_label(progress.phase),
+                        progress.current,
+                        progress.total
+                    ));
                 }
 
                 ui.separator();
@@ -825,6 +855,29 @@ fn action_kind_label(kind: ActionKind) -> &'static str {
         ActionKind::HardlinkReplace => "Hardlink replace",
         ActionKind::SymlinkReplace => "Symlink replace",
     }
+}
+
+fn progress_phase_label(phase: ScanProgressPhase) -> &'static str {
+    match phase {
+        ScanProgressPhase::CollectingFiles => "Collecting files",
+        ScanProgressPhase::GroupingBySize => "Grouping by size",
+        ScanProgressPhase::PartialHashing => "Partial hashing",
+        ScanProgressPhase::FullHashing => "Full hashing",
+        ScanProgressPhase::ByteVerifying => "Byte verifying",
+        ScanProgressPhase::ScanningArchives => "Scanning archives",
+        ScanProgressPhase::BuildingResults => "Building results",
+        ScanProgressPhase::Finished => "Finished",
+    }
+}
+
+fn progress_fraction(phase: ScanProgressPhase, current: usize, total: usize) -> f32 {
+    if phase == ScanProgressPhase::Finished {
+        return 1.0;
+    }
+    if total == 0 {
+        return 0.0;
+    }
+    (current as f32 / total as f32).clamp(0.0, 1.0)
 }
 
 fn execute_action_button_label(kind: ActionKind) -> &'static str {

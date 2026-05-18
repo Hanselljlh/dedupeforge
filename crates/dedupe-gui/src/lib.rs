@@ -4,8 +4,8 @@ use dedupe_actions::{
     ActionManifest, ActionPlan, SelectionRule,
 };
 use dedupe_core::{
-    scan_with_progress, CacheConfig, DuplicateGroup, HashAlgorithm, ScanConfig, ScanMode,
-    ScanProgress, ScanReport,
+    scan_with_progress, CacheConfig, DuplicateGroup, HashAlgorithm, ScanCancelToken, ScanConfig,
+    ScanMode, ScanProgress, ScanProgressPhase, ScanReport,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -147,6 +147,7 @@ pub struct GuiSessionState {
     pub last_action_plan: Option<ActionPlan>,
     pub last_manifest: Option<ActionManifest>,
     pub status_message: String,
+    pub scan_progress: Option<ScanProgress>,
 }
 
 impl Default for GuiSessionState {
@@ -157,6 +158,7 @@ impl Default for GuiSessionState {
             last_action_plan: None,
             last_manifest: None,
             status_message: "Ready".to_string(),
+            scan_progress: None,
         }
     }
 }
@@ -168,6 +170,7 @@ pub struct GuiController {
 
 struct ScanRuntime {
     receiver: Receiver<ScanWorkerEvent>,
+    cancel: ScanCancelToken,
 }
 
 enum ScanWorkerEvent {
@@ -204,14 +207,24 @@ impl GuiController {
 
         let config = self.state.profile.to_scan_config();
         let (sender, receiver) = mpsc::channel();
+        let cancel = ScanCancelToken::default();
 
         self.state.status_message = "Starting scan...".to_string();
+        self.state.scan_progress = Some(ScanProgress {
+            phase: ScanProgressPhase::CollectingFiles,
+            current: 0,
+            total: 0,
+            message: "Starting scan...".to_string(),
+        });
         self.state.last_action_plan = None;
         self.state.last_manifest = None;
-        self.scan_runtime = Some(ScanRuntime { receiver });
+        self.scan_runtime = Some(ScanRuntime {
+            receiver,
+            cancel: cancel.clone(),
+        });
 
         thread::spawn(move || {
-            let result = scan_with_progress(&config, |progress| {
+            let result = scan_with_progress(&config, cancel, |progress| {
                 let _ = sender.send(ScanWorkerEvent::Progress(progress));
             });
             let _ = sender.send(ScanWorkerEvent::Finished(result));
@@ -228,7 +241,8 @@ impl GuiController {
         loop {
             match runtime.receiver.try_recv() {
                 Ok(ScanWorkerEvent::Progress(progress)) => {
-                    self.state.status_message = progress.message;
+                    self.state.status_message = progress.message.clone();
+                    self.state.scan_progress = Some(progress);
                 }
                 Ok(ScanWorkerEvent::Finished(result)) => {
                     self.scan_runtime = None;
@@ -239,10 +253,22 @@ impl GuiController {
                                 report.duplicate_groups.len(),
                                 report.errors.len()
                             );
+                            self.state.scan_progress = Some(ScanProgress {
+                                phase: ScanProgressPhase::Finished,
+                                current: report.scanned_files,
+                                total: report.scanned_files,
+                                message: self.state.status_message.clone(),
+                            });
                             self.state.last_report = Some(report);
                         }
                         Err(err) => {
+                            if err.to_string().contains("scan canceled") {
+                                self.state.status_message = "Scan canceled".to_string();
+                                self.state.scan_progress = None;
+                                return Ok(false);
+                            }
                             self.state.status_message = "Scan failed".to_string();
+                            self.state.scan_progress = None;
                             return Err(err);
                         }
                     }
@@ -259,6 +285,16 @@ impl GuiController {
 
     pub fn is_scan_in_progress(&self) -> bool {
         self.scan_runtime.is_some()
+    }
+
+    pub fn cancel_scan(&mut self) -> bool {
+        if let Some(runtime) = &self.scan_runtime {
+            runtime.cancel.cancel();
+            self.state.status_message = "Canceling scan...".to_string();
+            true
+        } else {
+            false
+        }
     }
 
     pub fn build_action_plan(
@@ -797,6 +833,21 @@ mod tests {
         assert_eq!(removed, 1);
         let view = controller.results_view_model().unwrap();
         assert_eq!(view.group_count, 1);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cancel_scan_sets_canceling_status() {
+        let root = temp_dir("scan-cancel");
+        fs::write(root.join("a.txt"), b"same").unwrap();
+        fs::write(root.join("b.txt"), b"same").unwrap();
+
+        let mut controller = GuiController::new();
+        controller.state_mut().profile.paths = vec![root.clone()];
+        controller.run_scan().unwrap();
+        assert!(controller.cancel_scan());
+        assert_eq!(controller.state().status_message, "Canceling scan...");
 
         let _ = fs::remove_dir_all(root);
     }

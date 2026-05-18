@@ -8,6 +8,8 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ScanConfig {
@@ -76,6 +78,21 @@ pub struct ScanProgress {
     pub message: String,
 }
 
+#[derive(Clone, Default)]
+pub struct ScanCancelToken {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl ScanCancelToken {
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Relaxed)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub enum ScanProgressPhase {
@@ -109,16 +126,22 @@ pub enum MatchRisk {
 }
 
 pub fn scan(config: &ScanConfig) -> Result<ScanReport> {
-    scan_with_progress(config, |_| {})
+    scan_with_progress(config, ScanCancelToken::default(), |_| {})
 }
 
-pub fn scan_with_progress<F>(config: &ScanConfig, mut on_progress: F) -> Result<ScanReport>
+pub fn scan_with_progress<F>(
+    config: &ScanConfig,
+    cancel: ScanCancelToken,
+    mut on_progress: F,
+) -> Result<ScanReport>
 where
     F: FnMut(ScanProgress),
 {
+    ensure_not_cancelled(&cancel)?;
     match config.mode {
-        ScanMode::Exact => scan_exact_with_progress(config, &mut on_progress),
+        ScanMode::Exact => scan_exact_with_progress(config, &cancel, &mut on_progress),
         ScanMode::SimilarNames => {
+            ensure_not_cancelled(&cancel)?;
             on_progress(progress_event(
                 ScanProgressPhase::CollectingFiles,
                 0,
@@ -126,6 +149,7 @@ where
                 "Scanning similar filenames".to_string(),
             ));
             let report = scan_similar_names(config)?;
+            ensure_not_cancelled(&cancel)?;
             on_progress(progress_event(
                 ScanProgressPhase::Finished,
                 report.scanned_files,
@@ -135,6 +159,7 @@ where
             Ok(report)
         }
         ScanMode::SimilarImages => {
+            ensure_not_cancelled(&cancel)?;
             on_progress(progress_event(
                 ScanProgressPhase::CollectingFiles,
                 0,
@@ -142,6 +167,7 @@ where
                 "Scanning similar images".to_string(),
             ));
             let report = scan_similar_images(config)?;
+            ensure_not_cancelled(&cancel)?;
             on_progress(progress_event(
                 ScanProgressPhase::Finished,
                 report.scanned_files,
@@ -151,6 +177,7 @@ where
             Ok(report)
         }
         ScanMode::SimilarVideos => {
+            ensure_not_cancelled(&cancel)?;
             on_progress(progress_event(
                 ScanProgressPhase::CollectingFiles,
                 0,
@@ -158,6 +185,7 @@ where
                 "Scanning similar videos".to_string(),
             ));
             let report = crate::similar::scan_similar_videos(config)?;
+            ensure_not_cancelled(&cancel)?;
             on_progress(progress_event(
                 ScanProgressPhase::Finished,
                 report.scanned_files,
@@ -167,6 +195,7 @@ where
             Ok(report)
         }
         ScanMode::SimilarAudio => {
+            ensure_not_cancelled(&cancel)?;
             on_progress(progress_event(
                 ScanProgressPhase::CollectingFiles,
                 0,
@@ -174,6 +203,7 @@ where
                 "Scanning similar audio".to_string(),
             ));
             let report = crate::similar::scan_similar_audio(config)?;
+            ensure_not_cancelled(&cancel)?;
             on_progress(progress_event(
                 ScanProgressPhase::Finished,
                 report.scanned_files,
@@ -183,6 +213,7 @@ where
             Ok(report)
         }
         ScanMode::DuplicateFolders => {
+            ensure_not_cancelled(&cancel)?;
             on_progress(progress_event(
                 ScanProgressPhase::CollectingFiles,
                 0,
@@ -190,6 +221,7 @@ where
                 "Scanning duplicate folders".to_string(),
             ));
             let report = scan_duplicate_folders(config)?;
+            ensure_not_cancelled(&cancel)?;
             on_progress(progress_event(
                 ScanProgressPhase::Finished,
                 report.scanned_files,
@@ -202,13 +234,18 @@ where
 }
 
 pub fn scan_exact(config: &ScanConfig) -> Result<ScanReport> {
-    scan_exact_with_progress(config, &mut |_| {})
+    scan_exact_with_progress(config, &ScanCancelToken::default(), &mut |_| {})
 }
 
-pub fn scan_exact_with_progress<F>(config: &ScanConfig, on_progress: &mut F) -> Result<ScanReport>
+pub fn scan_exact_with_progress<F>(
+    config: &ScanConfig,
+    cancel: &ScanCancelToken,
+    on_progress: &mut F,
+) -> Result<ScanReport>
 where
     F: FnMut(ScanProgress),
 {
+    ensure_not_cancelled(cancel)?;
     on_progress(progress_event(
         ScanProgressPhase::CollectingFiles,
         0,
@@ -217,6 +254,7 @@ where
     ));
     let cache = open_cache_if_enabled(&config.cache)?;
     let collected = collect_files(&config.paths, &config.protected_roots, config.ignore_hidden)?;
+    ensure_not_cancelled(cancel)?;
     let files = collected
         .files
         .into_iter()
@@ -231,6 +269,7 @@ where
         format!("Grouping {scanned_files} files by size"),
     ));
     let by_size = group_by_size(files);
+    ensure_not_cancelled(cancel)?;
     let candidate_size_groups = by_size.values().filter(|g| g.len() > 1).count();
 
     let mut stats = HashRunStats {
@@ -256,6 +295,7 @@ where
         &mut stats,
         on_progress,
         ScanProgressPhase::PartialHashing,
+        cancel,
     );
     let partial_candidate_files: Vec<FileEntry> =
         partial_candidates.into_values().flatten().collect();
@@ -277,6 +317,7 @@ where
         &mut stats,
         on_progress,
         ScanProgressPhase::FullHashing,
+        cancel,
     );
 
     let mut duplicate_groups = Vec::new();
@@ -298,6 +339,7 @@ where
     }
 
     for (group_index, ((_size, full_hash), mut group)) in full_candidates.into_iter().enumerate() {
+        ensure_not_cancelled(cancel)?;
         if group.len() < 2 {
             continue;
         }
@@ -341,6 +383,7 @@ where
             .then_with(|| a.items[0].path.cmp(&b.items[0].path))
     });
     if config.scan_archives {
+        ensure_not_cancelled(cancel)?;
         on_progress(progress_event(
             ScanProgressPhase::ScanningArchives,
             0,
@@ -435,6 +478,7 @@ fn hash_files(
     stats: &mut HashRunStats,
     on_progress: &mut impl FnMut(ScanProgress),
     phase: ScanProgressPhase,
+    cancel: &ScanCancelToken,
 ) -> HashMap<(u64, String), Vec<FileEntry>> {
     let total = files.len();
     let hashed: Vec<HashOutcome> = if let Some(cache) = cache {
@@ -442,6 +486,9 @@ fn hash_files(
         let mut pending = Vec::new();
 
         for file in files {
+            if cancel.is_cancelled() {
+                break;
+            }
             let cache_key = cache_hash_key(
                 &file,
                 options.algorithm,
@@ -520,6 +567,9 @@ fn hash_files(
     let mut map: HashMap<(u64, String), Vec<FileEntry>> = HashMap::new();
 
     for (index, (file, maybe_hash)) in hashed.into_iter().enumerate() {
+        if cancel.is_cancelled() {
+            break;
+        }
         match maybe_hash {
             Err(error) => stats
                 .errors
@@ -543,6 +593,13 @@ fn hash_files(
 
     map.retain(|_, group| group.len() > 1);
     map
+}
+
+fn ensure_not_cancelled(cancel: &ScanCancelToken) -> Result<()> {
+    if cancel.is_cancelled() {
+        anyhow::bail!("scan canceled");
+    }
+    Ok(())
 }
 
 fn progress_event(
@@ -1004,6 +1061,7 @@ mod tests {
 
         let mut stats = HashRunStats::default();
         let mut on_progress = |_| {};
+        let cancel = ScanCancelToken::default();
         let hashed = hash_files(
             None,
             std::mem::take(&mut candidate_files),
@@ -1016,6 +1074,7 @@ mod tests {
             &mut stats,
             &mut on_progress,
             ScanProgressPhase::FullHashing,
+            &cancel,
         );
 
         assert_eq!(stats.errors.len(), 1);
@@ -1135,6 +1194,7 @@ mod tests {
 
         let mut stats = HashRunStats::default();
         let mut on_progress = |_| {};
+        let cancel = ScanCancelToken::default();
         let hashed = hash_files(
             Some(&cache),
             candidate_files,
@@ -1147,6 +1207,7 @@ mod tests {
             &mut stats,
             &mut on_progress,
             ScanProgressPhase::PartialHashing,
+            &cancel,
         );
 
         assert!(stats.errors.is_empty());
@@ -1198,6 +1259,7 @@ mod tests {
 
         let mut stats = HashRunStats::default();
         let mut on_progress = |_| {};
+        let cancel = ScanCancelToken::default();
         let hashed = hash_files(
             Some(&cache),
             vec![renamed_entry.clone(), renamed_entry],
@@ -1210,6 +1272,7 @@ mod tests {
             &mut stats,
             &mut on_progress,
             ScanProgressPhase::FullHashing,
+            &cancel,
         );
 
         assert!(stats.errors.is_empty());
