@@ -68,6 +68,27 @@ pub struct ScanReport {
     pub risk: MatchRisk,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ScanProgress {
+    pub phase: ScanProgressPhase,
+    pub current: usize,
+    pub total: usize,
+    pub message: String,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ScanProgressPhase {
+    CollectingFiles,
+    GroupingBySize,
+    PartialHashing,
+    FullHashing,
+    ByteVerifying,
+    ScanningArchives,
+    BuildingResults,
+    Finished,
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub enum ScanMode {
@@ -88,17 +109,112 @@ pub enum MatchRisk {
 }
 
 pub fn scan(config: &ScanConfig) -> Result<ScanReport> {
+    scan_with_progress(config, |_| {})
+}
+
+pub fn scan_with_progress<F>(config: &ScanConfig, mut on_progress: F) -> Result<ScanReport>
+where
+    F: FnMut(ScanProgress),
+{
     match config.mode {
-        ScanMode::Exact => scan_exact(config),
-        ScanMode::SimilarNames => scan_similar_names(config),
-        ScanMode::SimilarImages => scan_similar_images(config),
-        ScanMode::SimilarVideos => crate::similar::scan_similar_videos(config),
-        ScanMode::SimilarAudio => crate::similar::scan_similar_audio(config),
-        ScanMode::DuplicateFolders => scan_duplicate_folders(config),
+        ScanMode::Exact => scan_exact_with_progress(config, &mut on_progress),
+        ScanMode::SimilarNames => {
+            on_progress(progress_event(
+                ScanProgressPhase::CollectingFiles,
+                0,
+                0,
+                "Scanning similar filenames".to_string(),
+            ));
+            let report = scan_similar_names(config)?;
+            on_progress(progress_event(
+                ScanProgressPhase::Finished,
+                report.scanned_files,
+                report.scanned_files,
+                format!("Scan complete: {} groups", report.duplicate_groups.len()),
+            ));
+            Ok(report)
+        }
+        ScanMode::SimilarImages => {
+            on_progress(progress_event(
+                ScanProgressPhase::CollectingFiles,
+                0,
+                0,
+                "Scanning similar images".to_string(),
+            ));
+            let report = scan_similar_images(config)?;
+            on_progress(progress_event(
+                ScanProgressPhase::Finished,
+                report.scanned_files,
+                report.scanned_files,
+                format!("Scan complete: {} groups", report.duplicate_groups.len()),
+            ));
+            Ok(report)
+        }
+        ScanMode::SimilarVideos => {
+            on_progress(progress_event(
+                ScanProgressPhase::CollectingFiles,
+                0,
+                0,
+                "Scanning similar videos".to_string(),
+            ));
+            let report = crate::similar::scan_similar_videos(config)?;
+            on_progress(progress_event(
+                ScanProgressPhase::Finished,
+                report.scanned_files,
+                report.scanned_files,
+                format!("Scan complete: {} groups", report.duplicate_groups.len()),
+            ));
+            Ok(report)
+        }
+        ScanMode::SimilarAudio => {
+            on_progress(progress_event(
+                ScanProgressPhase::CollectingFiles,
+                0,
+                0,
+                "Scanning similar audio".to_string(),
+            ));
+            let report = crate::similar::scan_similar_audio(config)?;
+            on_progress(progress_event(
+                ScanProgressPhase::Finished,
+                report.scanned_files,
+                report.scanned_files,
+                format!("Scan complete: {} groups", report.duplicate_groups.len()),
+            ));
+            Ok(report)
+        }
+        ScanMode::DuplicateFolders => {
+            on_progress(progress_event(
+                ScanProgressPhase::CollectingFiles,
+                0,
+                0,
+                "Scanning duplicate folders".to_string(),
+            ));
+            let report = scan_duplicate_folders(config)?;
+            on_progress(progress_event(
+                ScanProgressPhase::Finished,
+                report.scanned_files,
+                report.scanned_files,
+                format!("Scan complete: {} groups", report.duplicate_groups.len()),
+            ));
+            Ok(report)
+        }
     }
 }
 
 pub fn scan_exact(config: &ScanConfig) -> Result<ScanReport> {
+    scan_exact_with_progress(config, &mut |_| {})
+}
+
+pub fn scan_exact_with_progress<F>(config: &ScanConfig, on_progress: &mut F) -> Result<ScanReport>
+where
+    F: FnMut(ScanProgress),
+{
+    on_progress(progress_event(
+        ScanProgressPhase::CollectingFiles,
+        0,
+        config.paths.len(),
+        "Collecting files".to_string(),
+    ));
     let cache = open_cache_if_enabled(&config.cache)?;
     let collected = collect_files(&config.paths, &config.protected_roots, config.ignore_hidden)?;
     let files = collected
@@ -108,6 +224,12 @@ pub fn scan_exact(config: &ScanConfig) -> Result<ScanReport> {
         .collect::<Vec<_>>();
 
     let scanned_files = files.len();
+    on_progress(progress_event(
+        ScanProgressPhase::GroupingBySize,
+        scanned_files,
+        scanned_files,
+        format!("Grouping {scanned_files} files by size"),
+    ));
     let by_size = group_by_size(files);
     let candidate_size_groups = by_size.values().filter(|g| g.len() > 1).count();
 
@@ -116,6 +238,12 @@ pub fn scan_exact(config: &ScanConfig) -> Result<ScanReport> {
         ..Default::default()
     };
     let size_candidate_files: Vec<FileEntry> = by_size.into_values().flatten().collect();
+    on_progress(progress_event(
+        ScanProgressPhase::PartialHashing,
+        0,
+        size_candidate_files.len(),
+        format!("Partial hashing {} candidates", size_candidate_files.len()),
+    ));
     let partial_candidates = hash_files(
         cache.as_ref(),
         size_candidate_files,
@@ -126,9 +254,17 @@ pub fn scan_exact(config: &ScanConfig) -> Result<ScanReport> {
             modified_time_tolerance_secs: config.cache.modified_time_tolerance_secs,
         },
         &mut stats,
+        on_progress,
+        ScanProgressPhase::PartialHashing,
     );
     let partial_candidate_files: Vec<FileEntry> =
         partial_candidates.into_values().flatten().collect();
+    on_progress(progress_event(
+        ScanProgressPhase::FullHashing,
+        0,
+        partial_candidate_files.len(),
+        format!("Full hashing {} candidates", partial_candidate_files.len()),
+    ));
     let full_candidates = hash_files(
         cache.as_ref(),
         partial_candidate_files,
@@ -139,17 +275,41 @@ pub fn scan_exact(config: &ScanConfig) -> Result<ScanReport> {
             modified_time_tolerance_secs: config.cache.modified_time_tolerance_secs,
         },
         &mut stats,
+        on_progress,
+        ScanProgressPhase::FullHashing,
     );
 
     let mut duplicate_groups = Vec::new();
+    let full_group_count = full_candidates.len();
+    if config.byte_verify {
+        on_progress(progress_event(
+            ScanProgressPhase::ByteVerifying,
+            0,
+            full_group_count,
+            format!("Byte verifying {full_group_count} groups"),
+        ));
+    } else {
+        on_progress(progress_event(
+            ScanProgressPhase::BuildingResults,
+            0,
+            full_group_count,
+            format!("Building {full_group_count} result groups"),
+        ));
+    }
 
-    for ((_size, full_hash), mut group) in full_candidates {
+    for (group_index, ((_size, full_hash), mut group)) in full_candidates.into_iter().enumerate() {
         if group.len() < 2 {
             continue;
         }
         group.sort_by_key(item_sort_key);
 
         if config.byte_verify {
+            on_progress(progress_event(
+                ScanProgressPhase::ByteVerifying,
+                group_index + 1,
+                full_group_count,
+                format!("Byte verifying group {} of {}", group_index + 1, full_group_count),
+            ));
             for verified in split_by_byte_equality(&group, &mut stats.errors) {
                 if verified.len() > 1 {
                     duplicate_groups.push(make_group(
@@ -161,6 +321,12 @@ pub fn scan_exact(config: &ScanConfig) -> Result<ScanReport> {
                 }
             }
         } else {
+            on_progress(progress_event(
+                ScanProgressPhase::BuildingResults,
+                group_index + 1,
+                full_group_count,
+                format!("Building group {} of {}", group_index + 1, full_group_count),
+            ));
             duplicate_groups.push(make_group(group, config.algorithm, full_hash, false));
         }
     }
@@ -171,6 +337,12 @@ pub fn scan_exact(config: &ScanConfig) -> Result<ScanReport> {
             .then_with(|| a.items[0].path.cmp(&b.items[0].path))
     });
     if config.scan_archives {
+        on_progress(progress_event(
+            ScanProgressPhase::ScanningArchives,
+            0,
+            config.paths.len(),
+            "Scanning zip archives".to_string(),
+        ));
         duplicate_groups.extend(scan_zip_archives_exact(config, &mut stats.errors)?);
         duplicate_groups.sort_by(|a, b| {
             b.size
@@ -179,7 +351,7 @@ pub fn scan_exact(config: &ScanConfig) -> Result<ScanReport> {
         });
     }
 
-    Ok(ScanReport {
+    let report = ScanReport {
         mode: ScanMode::Exact,
         scanned_files,
         candidate_size_groups,
@@ -188,7 +360,14 @@ pub fn scan_exact(config: &ScanConfig) -> Result<ScanReport> {
         duplicate_groups,
         errors: stats.errors,
         risk: MatchRisk::Low,
-    })
+    };
+    on_progress(progress_event(
+        ScanProgressPhase::Finished,
+        report.scanned_files,
+        report.scanned_files,
+        format!("Scan complete: {} groups", report.duplicate_groups.len()),
+    ));
+    Ok(report)
 }
 
 fn group_by_size(files: Vec<FileEntry>) -> HashMap<u64, Vec<FileEntry>> {
@@ -222,7 +401,10 @@ fn hash_files(
     files: Vec<FileEntry>,
     options: HashRunOptions,
     stats: &mut HashRunStats,
+    on_progress: &mut impl FnMut(ScanProgress),
+    phase: ScanProgressPhase,
 ) -> HashMap<(u64, String), Vec<FileEntry>> {
+    let total = files.len();
     let hashed: Vec<HashOutcome> = if let Some(cache) = cache {
         files
             .into_iter()
@@ -261,7 +443,7 @@ fn hash_files(
 
     let mut map: HashMap<(u64, String), Vec<FileEntry>> = HashMap::new();
 
-    for (file, maybe_hash) in hashed {
+    for (index, (file, maybe_hash)) in hashed.into_iter().enumerate() {
         match maybe_hash {
             Err(error) => stats
                 .errors
@@ -275,10 +457,48 @@ fn hash_files(
                 map.entry((file.size, hash)).or_default().push(file);
             }
         }
+        on_progress(progress_event(
+            phase,
+            index + 1,
+            total,
+            progress_message(phase, index + 1, total),
+        ));
     }
 
     map.retain(|_, group| group.len() > 1);
     map
+}
+
+fn progress_event(
+    phase: ScanProgressPhase,
+    current: usize,
+    total: usize,
+    message: String,
+) -> ScanProgress {
+    ScanProgress {
+        phase,
+        current,
+        total,
+        message,
+    }
+}
+
+fn progress_message(phase: ScanProgressPhase, current: usize, total: usize) -> String {
+    let label = match phase {
+        ScanProgressPhase::CollectingFiles => "Collecting files",
+        ScanProgressPhase::GroupingBySize => "Grouping files",
+        ScanProgressPhase::PartialHashing => "Partial hashing",
+        ScanProgressPhase::FullHashing => "Full hashing",
+        ScanProgressPhase::ByteVerifying => "Byte verifying",
+        ScanProgressPhase::ScanningArchives => "Scanning archives",
+        ScanProgressPhase::BuildingResults => "Building results",
+        ScanProgressPhase::Finished => "Finished",
+    };
+    if total == 0 {
+        label.to_string()
+    } else {
+        format!("{label}: {current}/{total}")
+    }
 }
 
 fn hash_without_cache(
@@ -744,6 +964,7 @@ mod tests {
         fs::remove_file(&missing).unwrap();
 
         let mut stats = HashRunStats::default();
+        let mut on_progress = |_| {};
         let hashed = hash_files(
             None,
             std::mem::take(&mut candidate_files),
@@ -754,6 +975,8 @@ mod tests {
                 modified_time_tolerance_secs: 0,
             },
             &mut stats,
+            &mut on_progress,
+            ScanProgressPhase::FullHashing,
         );
 
         assert_eq!(stats.errors.len(), 1);
@@ -872,6 +1095,7 @@ mod tests {
         ];
 
         let mut stats = HashRunStats::default();
+        let mut on_progress = |_| {};
         let hashed = hash_files(
             Some(&cache),
             candidate_files,
@@ -882,6 +1106,8 @@ mod tests {
                 modified_time_tolerance_secs: 2,
             },
             &mut stats,
+            &mut on_progress,
+            ScanProgressPhase::PartialHashing,
         );
 
         assert!(stats.errors.is_empty());
@@ -932,6 +1158,7 @@ mod tests {
         };
 
         let mut stats = HashRunStats::default();
+        let mut on_progress = |_| {};
         let hashed = hash_files(
             Some(&cache),
             vec![renamed_entry.clone(), renamed_entry],
@@ -942,6 +1169,8 @@ mod tests {
                 modified_time_tolerance_secs: 0,
             },
             &mut stats,
+            &mut on_progress,
+            ScanProgressPhase::FullHashing,
         );
 
         assert!(stats.errors.is_empty());

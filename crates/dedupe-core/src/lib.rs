@@ -7,6 +7,6 @@ pub mod verify;
 pub use fs_walk::{FileCollection, FileIdentity};
 pub use hash::HashAlgorithm;
 pub use scan::{
-    scan, scan_exact, CacheConfig, DuplicateGroup, DuplicateItem, MatchRisk, ScanConfig, ScanMode,
-    ScanReport,
+    scan, scan_exact, scan_with_progress, CacheConfig, DuplicateGroup, DuplicateItem, MatchRisk,
+    ScanConfig, ScanMode, ScanProgress, ScanProgressPhase, ScanReport,
 };

@@ -180,6 +180,14 @@ impl DedupeForgeApp {
 
 impl eframe::App for DedupeForgeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        match self.controller.poll_scan_progress() {
+            Ok(true) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(50));
+            }
+            Ok(false) => {}
+            Err(err) => self.error_message = err.to_string(),
+        }
+
         egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.heading("DedupeForge");
@@ -342,7 +350,15 @@ impl eframe::App for DedupeForgeApp {
                 });
 
                 ui.add_space(8.0);
-                if ui.button("Run Scan").clicked() {
+                let scan_in_progress = self.controller.is_scan_in_progress();
+                if ui
+                    .add_enabled(!scan_in_progress, egui::Button::new(if scan_in_progress {
+                        "Scanning..."
+                    } else {
+                        "Run Scan"
+                    }))
+                    .clicked()
+                {
                     self.run_scan();
                 }
 
