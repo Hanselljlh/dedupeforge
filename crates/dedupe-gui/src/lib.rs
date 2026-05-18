@@ -4,12 +4,15 @@ use dedupe_actions::{
     ActionManifest, ActionPlan, SelectionRule,
 };
 use dedupe_core::{
-    scan, CacheConfig, DuplicateGroup, HashAlgorithm, ScanConfig, ScanMode, ScanReport,
+    scan_with_progress, CacheConfig, DuplicateGroup, HashAlgorithm, ScanConfig, ScanMode,
+    ScanProgress, ScanReport,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GuiScanProfile {
@@ -160,6 +163,16 @@ impl Default for GuiSessionState {
 
 pub struct GuiController {
     state: GuiSessionState,
+    scan_runtime: Option<ScanRuntime>,
+}
+
+struct ScanRuntime {
+    receiver: Receiver<ScanWorkerEvent>,
+}
+
+enum ScanWorkerEvent {
+    Progress(ScanProgress),
+    Finished(Result<ScanReport>),
 }
 
 impl Default for GuiController {
@@ -172,6 +185,7 @@ impl GuiController {
     pub fn new() -> Self {
         Self {
             state: GuiSessionState::default(),
+            scan_runtime: None,
         }
     }
 
@@ -183,17 +197,68 @@ impl GuiController {
         &mut self.state
     }
 
-    pub fn run_scan(&mut self) -> Result<&ScanReport> {
-        let report = scan(&self.state.profile.to_scan_config())?;
-        self.state.status_message = format!(
-            "Scan complete: {} groups, {} errors",
-            report.duplicate_groups.len(),
-            report.errors.len()
-        );
+    pub fn run_scan(&mut self) -> Result<()> {
+        if self.scan_runtime.is_some() {
+            anyhow::bail!("a scan is already in progress");
+        }
+
+        let config = self.state.profile.to_scan_config();
+        let (sender, receiver) = mpsc::channel();
+
+        self.state.status_message = "Starting scan...".to_string();
         self.state.last_action_plan = None;
         self.state.last_manifest = None;
-        self.state.last_report = Some(report);
-        Ok(self.state.last_report.as_ref().expect("report just set"))
+        self.scan_runtime = Some(ScanRuntime { receiver });
+
+        thread::spawn(move || {
+            let result = scan_with_progress(&config, |progress| {
+                let _ = sender.send(ScanWorkerEvent::Progress(progress));
+            });
+            let _ = sender.send(ScanWorkerEvent::Finished(result));
+        });
+
+        Ok(())
+    }
+
+    pub fn poll_scan_progress(&mut self) -> Result<bool> {
+        let Some(runtime) = self.scan_runtime.as_mut() else {
+            return Ok(false);
+        };
+
+        loop {
+            match runtime.receiver.try_recv() {
+                Ok(ScanWorkerEvent::Progress(progress)) => {
+                    self.state.status_message = progress.message;
+                }
+                Ok(ScanWorkerEvent::Finished(result)) => {
+                    self.scan_runtime = None;
+                    match result {
+                        Ok(report) => {
+                            self.state.status_message = format!(
+                                "Scan complete: {} groups, {} errors",
+                                report.duplicate_groups.len(),
+                                report.errors.len()
+                            );
+                            self.state.last_report = Some(report);
+                        }
+                        Err(err) => {
+                            self.state.status_message = "Scan failed".to_string();
+                            return Err(err);
+                        }
+                    }
+                    return Ok(false);
+                }
+                Err(TryRecvError::Empty) => return Ok(true),
+                Err(TryRecvError::Disconnected) => {
+                    self.scan_runtime = None;
+                    anyhow::bail!("scan worker disconnected unexpectedly");
+                }
+            }
+        }
+    }
+
+    pub fn is_scan_in_progress(&self) -> bool {
+        self.scan_runtime.is_some()
     }
 
     pub fn build_action_plan(&mut self, selection_rule: SelectionRule) -> Result<&ActionPlan> {
@@ -251,7 +316,10 @@ impl GuiController {
     pub fn load_session(path: &Path) -> Result<Self> {
         let text = fs::read_to_string(path)?;
         let state: GuiSessionState = serde_json::from_str(&text)?;
-        Ok(Self { state })
+        Ok(Self {
+            state,
+            scan_runtime: None,
+        })
     }
 
     pub fn save_report(&self, path: &Path) -> Result<()> {
@@ -509,7 +577,11 @@ mod tests {
         controller.state_mut().profile.paths = vec![root.clone()];
         controller.state_mut().profile.mode = ScanMode::Exact;
 
-        let report = controller.run_scan().unwrap();
+        controller.run_scan().unwrap();
+        while controller.is_scan_in_progress() {
+            controller.poll_scan_progress().unwrap();
+        }
+        let report = controller.state().last_report.as_ref().unwrap();
         assert_eq!(report.mode, ScanMode::Exact);
 
         let view = controller.results_view_model().unwrap();
@@ -527,6 +599,9 @@ mod tests {
         let mut controller = GuiController::new();
         controller.state_mut().profile.paths = vec![root.clone()];
         controller.run_scan().unwrap();
+        while controller.is_scan_in_progress() {
+            controller.poll_scan_progress().unwrap();
+        }
 
         let plan = controller
             .build_action_plan(SelectionRule::KeepSuggested)
@@ -546,6 +621,9 @@ mod tests {
         controller.state_mut().profile.paths = vec![root.clone()];
         controller.state_mut().profile.mode = ScanMode::SimilarNames;
         controller.run_scan().unwrap();
+        while controller.is_scan_in_progress() {
+            controller.poll_scan_progress().unwrap();
+        }
 
         let err = controller
             .build_action_plan(SelectionRule::KeepSuggested)
@@ -584,6 +662,9 @@ mod tests {
         let mut controller = GuiController::new();
         controller.state_mut().profile.paths = vec![root.clone()];
         controller.run_scan().unwrap();
+        while controller.is_scan_in_progress() {
+            controller.poll_scan_progress().unwrap();
+        }
         controller.save_report(&report_path).unwrap();
 
         let mut loaded = GuiController::new();
@@ -636,6 +717,29 @@ mod tests {
             preview.image_rgba.as_ref().unwrap().len(),
             preview.image_width.unwrap() * preview.image_height.unwrap() * 4
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_scan_updates_status_message_through_progress() {
+        let root = temp_dir("scan-progress");
+        fs::write(root.join("a.txt"), b"same").unwrap();
+        fs::write(root.join("b.txt"), b"same").unwrap();
+
+        let mut controller = GuiController::new();
+        controller.state_mut().profile.paths = vec![root.clone()];
+
+        controller.run_scan().unwrap();
+        let mut saw_progress = false;
+        while controller.is_scan_in_progress() {
+            if controller.poll_scan_progress().unwrap() {
+                saw_progress = true;
+            }
+        }
+
+        assert!(saw_progress);
+        assert!(controller.state().status_message.contains("Scan complete"));
 
         let _ = fs::remove_dir_all(root);
     }
