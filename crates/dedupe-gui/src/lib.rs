@@ -311,6 +311,35 @@ impl GuiController {
         Ok(())
     }
 
+    pub fn remove_groups_from_review(&mut self, group_indices: &[usize]) -> Result<usize> {
+        let report = self
+            .state
+            .last_report
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("run a scan before pruning results"))?;
+        if group_indices.is_empty() {
+            return Ok(0);
+        }
+
+        let mut sorted = group_indices.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+
+        let original_len = report.duplicate_groups.len();
+        report.duplicate_groups = report
+            .duplicate_groups
+            .drain(..)
+            .enumerate()
+            .filter_map(|(index, group)| (!sorted.contains(&index)).then_some(group))
+            .collect();
+
+        let removed = original_len.saturating_sub(report.duplicate_groups.len());
+        self.state.last_action_plan = None;
+        self.state.last_manifest = None;
+        self.state.status_message = format!("Removed {removed} groups from the current review");
+        Ok(removed)
+    }
+
     pub fn execute_action_plan(&mut self, quarantine_root: &Path) -> Result<&ActionManifest> {
         let plan = self
             .state
@@ -745,6 +774,29 @@ mod tests {
         let view = controller.results_view_model().unwrap();
         assert!(!view.groups[0].items[0].suggested_keep);
         assert!(view.groups[0].items[1].suggested_keep);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn gui_controller_can_remove_groups_from_review() {
+        let root = temp_dir("remove-groups");
+        fs::write(root.join("a.txt"), b"same-a").unwrap();
+        fs::write(root.join("b.txt"), b"same-a").unwrap();
+        fs::write(root.join("c.txt"), b"same-b").unwrap();
+        fs::write(root.join("d.txt"), b"same-b").unwrap();
+
+        let mut controller = GuiController::new();
+        controller.state_mut().profile.paths = vec![root.clone()];
+        controller.run_scan().unwrap();
+        while controller.is_scan_in_progress() {
+            controller.poll_scan_progress().unwrap();
+        }
+
+        let removed = controller.remove_groups_from_review(&[0]).unwrap();
+        assert_eq!(removed, 1);
+        let view = controller.results_view_model().unwrap();
+        assert_eq!(view.group_count, 1);
 
         let _ = fs::remove_dir_all(root);
     }
