@@ -1181,6 +1181,7 @@ dependencies = [
  "anyhow",
  "dedupe-actions",
  "dedupe-core",
+ "dedupe-report-db",
  "eframe",
  "image",
  "serde",

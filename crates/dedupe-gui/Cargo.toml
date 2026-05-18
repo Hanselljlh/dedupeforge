@@ -12,6 +12,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 dedupe-actions = { path = "../dedupe-actions" }
 dedupe-core = { path = "../dedupe-core" }
+dedupe-report-db = { path = "../dedupe-report-db" }
 eframe.workspace = true
 image.workspace = true
 serde.workspace = true
