@@ -284,6 +284,33 @@ impl GuiController {
         Ok(self.state.last_action_plan.as_ref().expect("plan just set"))
     }
 
+    pub fn set_keep_override(&mut self, group_index: usize, item_index: usize) -> Result<()> {
+        let report = self
+            .state
+            .last_report
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("run a scan before editing keeper selection"))?;
+        if report.mode != ScanMode::Exact {
+            anyhow::bail!("keeper overrides are only supported for exact-mode scan results");
+        }
+        let group = report
+            .duplicate_groups
+            .get_mut(group_index)
+            .ok_or_else(|| anyhow::anyhow!("group index out of range"))?;
+        if item_index >= group.items.len() {
+            anyhow::bail!("item index out of range");
+        }
+
+        for (index, item) in group.items.iter_mut().enumerate() {
+            item.suggested_keep = index == item_index;
+        }
+
+        self.state.last_action_plan = None;
+        self.state.last_manifest = None;
+        self.state.status_message = format!("Keeper override set for group {}", group_index + 1);
+        Ok(())
+    }
+
     pub fn execute_action_plan(&mut self, quarantine_root: &Path) -> Result<&ActionManifest> {
         let plan = self
             .state
@@ -697,6 +724,27 @@ mod tests {
         assert_eq!(plan.action_kind, "hardlink_replace");
         assert_eq!(plan.summary.items_selected, 1);
         assert!(plan.items[0].replacement_target.is_some());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn gui_controller_can_override_keeper_selection() {
+        let root = temp_dir("keeper-override");
+        fs::write(root.join("a.txt"), b"same").unwrap();
+        fs::write(root.join("b.txt"), b"same").unwrap();
+
+        let mut controller = GuiController::new();
+        controller.state_mut().profile.paths = vec![root.clone()];
+        controller.run_scan().unwrap();
+        while controller.is_scan_in_progress() {
+            controller.poll_scan_progress().unwrap();
+        }
+
+        controller.set_keep_override(0, 1).unwrap();
+        let view = controller.results_view_model().unwrap();
+        assert!(!view.groups[0].items[0].suggested_keep);
+        assert!(view.groups[0].items[1].suggested_keep);
 
         let _ = fs::remove_dir_all(root);
     }
