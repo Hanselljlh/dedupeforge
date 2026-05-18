@@ -1,37 +1,47 @@
 # Architecture
 
-DedupeForge should be built as a reusable backend with multiple frontends.
+DedupeForge is built as a reusable backend with multiple frontends and supporting crates.
 
 ```text
-                ┌──────────────────────┐
-                │      dedupe-gui       │
-                │  desktop frontend     │
-                └──────────┬───────────┘
-                           │
-                ┌──────────▼───────────┐
-                │      dedupe-cli       │
-                │    CLI frontend       │
-                └──────────┬───────────┘
-                           │
-                ┌──────────▼───────────┐
-                │     dedupe-core       │
-                │ scan/group/hash/report│
-                └──────────┬───────────┘
-                           │
-        ┌──────────────────┼──────────────────┐
-        │                  │                  │
-┌───────▼───────┐  ┌───────▼────────┐ ┌───────▼────────┐
-│ dedupe-cache  │  │ dedupe-actions │ │ dedupe-media   │
-│ planned SQLite│  │ planned actions│ │ planned media  │
-└───────────────┘  └────────────────┘ └────────────────┘
+                +----------------------+
+                |      dedupe-gui      |
+                |   desktop frontend   |
+                +----------+-----------+
+                           |
+                +----------v-----------+
+                |      dedupe-cli      |
+                |     CLI frontend     |
+                +----------+-----------+
+                           |
+                +----------v-----------+
+                |     dedupe-core      |
+                | scan/group/hash/report|
+                +----+-----------+-----+
+                     |           |
+        +------------+---+   +---+-------------+
+        |                |   |                 |
++-------v--------+ +-----v-------+ +-----------v------+
+|  dedupe-cache  | | dedupe-actions| |  dedupe-media   |
+| SQLite hashes  | | safe actions  | | media matching  |
++----------------+ +---------------+ +-----------------+
+                           |
+                +----------v-----------+
+                |   dedupe-report-db   |
+                |  stored scan reports |
+                +----------------------+
 ```
 
 ## Current design
 
-The current MVP has two crates:
+The current prototype workspace has multiple active crates:
 
-- `dedupe-core`: backend library
-- `dedupe-cli`: CLI frontend
+- `dedupe-core`: backend scan, grouping, hashing, and report engine
+- `dedupe-cli`: CLI frontend and report/action-plan entrypoint
+- `dedupe-cache`: SQLite-backed reusable hash and fingerprint cache
+- `dedupe-actions`: dry-run planning, quarantine execution, restore, and advanced link actions
+- `dedupe-media`: image, video, and audio similarity helpers
+- `dedupe-report-db`: stored scan report database
+- `dedupe-gui`: GUI controller plus desktop `egui` prototype shell
 
 The core library owns:
 
@@ -48,6 +58,14 @@ The CLI owns:
 - config creation
 - output formatting
 
+Supporting crates own:
+
+- cache persistence and cache lookup policy
+- action planning, validation, manifests, and reversible execution
+- similarity and fingerprint helpers for non-exact modes
+- stored report persistence and browsing
+- GUI session state, previews, and report/action orchestration
+
 ## Design rules
 
 ### 1. The GUI must not become the engine
@@ -62,55 +80,55 @@ Scan results should be usable by:
 - CLI
 - tests
 - external tools
-- future action planner
+- future automation
 
 ### 3. Actions should consume reports, not raw UI state
 
-Future cleanup actions should run from a validated action plan generated from scan results.
+Cleanup actions should run from a validated action plan generated from scan results.
 
 ### 4. Matching engines should be modular
 
 Each engine should report:
 
 - match type
-- confidence/score where applicable
+- confidence or score where applicable
 - exact reason
 - engine-specific metadata
 - false-positive risk level
 
-### 5. Long-running scans should be resumable later
+### 5. Long-running scans should be resumable and reusable
 
-The future cache layer should make repeated scans faster and support interrupted scan recovery where practical.
+The cache layer should make repeated scans faster and reduce unnecessary rehashing while keeping destructive operations conservative.
 
-## Planned data flow
+## Data flow
 
 ```text
 ScanConfig
-  ↓
+  ->
 File collection
-  ↓
+  ->
 File identity and metadata
-  ↓
+  ->
 Candidate grouping
-  ↓
+  ->
 Match engine
-  ↓
-Duplicate/Similar groups
-  ↓
+  ->
+Duplicate or similar groups
+  ->
 Report
-  ↓
+  ->
 Review UI or CLI output
-  ↓
+  ->
 Action plan
-  ↓
-Quarantine/delete/link action
-  ↓
+  ->
+Quarantine, restore, or link action
+  ->
 Action log + undo manifest
 ```
 
 ## Threading model
 
-The backend should parallelize expensive read/hash operations. UI frontends should receive progress updates through a progress/event API rather than blocking the main UI thread.
+The backend parallelizes expensive read and hash operations where practical. UI frontends should receive progress updates through a progress or event API rather than blocking the main UI thread.
 
 ## Error model
 
