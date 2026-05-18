@@ -1,0 +1,8 @@
+# Default ownership for the repository.
+* @Hanselljlh
+
+# Safety-sensitive areas.
+/crates/dedupe-actions/ @Hanselljlh
+/crates/dedupe-core/ @Hanselljlh
+/docs/engineering/ @Hanselljlh
+/SECURITY.md @Hanselljlh

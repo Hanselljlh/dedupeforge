@@ -11,12 +11,14 @@ Do not publicly post a working exploit for destructive file behavior before main
 For this project, the following are treated as high severity:
 
 - deleting all files in a duplicate group
-- modifying protected/reference paths
+- modifying protected or reference paths
 - action manifest mismatch
 - restoring files to the wrong path
 - trusting stale cache data for destructive actions
 - following symlinks unexpectedly during destructive actions
 
-## Current MVP
+## Current action model
 
-The current MVP has no destructive actions. It only scans and reports.
+The current prototype includes reversible quarantine moves, manifest-based restore, and opt-in hard-link and symlink replacement.
+
+That means bugs in planning, quarantine, restore, replacement, or protected-path handling should be treated as security-sensitive for this project.

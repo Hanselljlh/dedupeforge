@@ -87,7 +87,7 @@ The long-term goal is not just to delete duplicates. The goal is to help a user 
 `-- .github/                  # CI, issue templates, PR template
 ```
 
-See [docs/REPO_LAYOUT.md](docs/REPO_LAYOUT.md) for the full planned structure.
+See [docs/REPO_LAYOUT.md](docs/REPO_LAYOUT.md) for the full repository structure.
 
 ## Install requirements
 
