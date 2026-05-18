@@ -2,6 +2,7 @@ use dedupe_actions::SelectionRule;
 use dedupe_core::{HashAlgorithm, ScanMode};
 use dedupe_gui::{GroupViewModel, GuiController, PreviewData};
 use eframe::egui;
+use eframe::egui::{ColorImage, TextureHandle, TextureOptions};
 use std::path::{Path, PathBuf};
 
 fn main() -> eframe::Result<()> {
@@ -34,6 +35,8 @@ struct DedupeForgeApp {
     selected_group_index: usize,
     selected_item_index: usize,
     error_message: String,
+    preview_texture_path: Option<PathBuf>,
+    preview_texture: Option<TextureHandle>,
 }
 
 impl Default for DedupeForgeApp {
@@ -53,6 +56,8 @@ impl Default for DedupeForgeApp {
             selected_group_index: 0,
             selected_item_index: 0,
             error_message: String::new(),
+            preview_texture_path: None,
+            preview_texture: None,
         };
         app.load_profile_buffers_from_state();
         app
@@ -466,9 +471,12 @@ impl eframe::App for DedupeForgeApp {
                     if let Some(group) = view.groups.get(self.selected_group_index) {
                         render_group_details(
                             &mut columns[1],
+                            ctx,
                             group,
                             &mut self.selected_item_index,
                             &self.controller,
+                            &mut self.preview_texture_path,
+                            &mut self.preview_texture,
                         );
                     } else {
                         columns[1].label("Run a scan to populate grouped results.");
@@ -521,9 +529,12 @@ impl eframe::App for DedupeForgeApp {
 
 fn render_group_details(
     ui: &mut egui::Ui,
+    ctx: &egui::Context,
     group: &GroupViewModel,
     selected_item_index: &mut usize,
     controller: &GuiController,
+    preview_texture_path: &mut Option<PathBuf>,
+    preview_texture: &mut Option<TextureHandle>,
 ) {
     ui.label(format!("Reason: {}", group.reason));
     ui.label(format!("Engine: {}", group.algorithm_or_engine));
@@ -572,13 +583,19 @@ fn render_group_details(
     ui.heading("Preview");
     if let Some(item) = group.items.get(*selected_item_index) {
         let preview = controller.preview_for_item(item);
-        render_preview_panel(ui, &preview);
+        render_preview_panel(ui, ctx, &preview, preview_texture_path, preview_texture);
     } else {
         ui.label("Select a file in this group to preview it.");
     }
 }
 
-fn render_preview_panel(ui: &mut egui::Ui, preview: &PreviewData) {
+fn render_preview_panel(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    preview: &PreviewData,
+    preview_texture_path: &mut Option<PathBuf>,
+    preview_texture: &mut Option<TextureHandle>,
+) {
     ui.label(format!("File: {}", preview.file_name));
     ui.label(format!("Path: {}", preview.path.display()));
     ui.label(format!("Size: {} bytes", preview.size));
@@ -612,6 +629,40 @@ fn render_preview_panel(ui: &mut egui::Ui, preview: &PreviewData) {
         preview.preview_kind, extension_label
     ));
     ui.add_space(6.0);
+
+    if preview.preview_kind == "image" {
+        if let (Some(width), Some(height), Some(rgba)) = (
+            preview.image_width,
+            preview.image_height,
+            preview.image_rgba.as_ref(),
+        ) {
+            let needs_reload = preview_texture_path.as_ref() != Some(&preview.path);
+            if needs_reload {
+                let image = ColorImage::from_rgba_unmultiplied([width, height], rgba);
+                *preview_texture = Some(ctx.load_texture(
+                    format!("preview:{}", preview.path.display()),
+                    image,
+                    TextureOptions::LINEAR,
+                ));
+                *preview_texture_path = Some(preview.path.clone());
+            }
+
+            if let Some(texture) = preview_texture.as_ref() {
+                let available_width = ui.available_width().max(120.0);
+                let scale = (available_width / width as f32).min(1.0);
+                let image_size = egui::vec2(width as f32 * scale, height as f32 * scale);
+                ui.image((texture.id(), image_size));
+                ui.add_space(6.0);
+            }
+        } else {
+            *preview_texture = None;
+            *preview_texture_path = None;
+        }
+    } else {
+        *preview_texture = None;
+        *preview_texture_path = None;
+    }
+
     let mut preview_buffer = preview.preview_text.clone();
     egui::ScrollArea::vertical()
         .max_height(220.0)

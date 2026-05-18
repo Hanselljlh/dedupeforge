@@ -13,5 +13,6 @@ anyhow.workspace = true
 dedupe-actions = { path = "../dedupe-actions" }
 dedupe-core = { path = "../dedupe-core" }
 eframe.workspace = true
+image.workspace = true
 serde.workspace = true
 serde_json.workspace = true

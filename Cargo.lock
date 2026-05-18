@@ -1182,6 +1182,7 @@ dependencies = [
  "dedupe-actions",
  "dedupe-core",
  "eframe",
+ "image",
  "serde",
  "serde_json",
 ]

@@ -132,6 +132,9 @@ pub struct PreviewData {
     pub suggested_keep: bool,
     pub preview_kind: String,
     pub preview_text: String,
+    pub image_width: Option<usize>,
+    pub image_height: Option<usize>,
+    pub image_rgba: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -337,7 +340,7 @@ fn build_preview_data(item: &ItemViewModel) -> PreviewData {
         .and_then(|name| name.to_str())
         .unwrap_or_default()
         .to_string();
-    let (preview_kind, preview_text) = read_preview_text(&item.path, extension.as_deref());
+    let preview = read_preview(&item.path, extension.as_deref());
 
     PreviewData {
         path: item.path.clone(),
@@ -347,58 +350,117 @@ fn build_preview_data(item: &ItemViewModel) -> PreviewData {
         modified_unix: item.modified_unix,
         is_protected: item.is_protected,
         suggested_keep: item.suggested_keep,
-        preview_kind,
-        preview_text,
+        preview_kind: preview.preview_kind,
+        preview_text: preview.preview_text,
+        image_width: preview.image_width,
+        image_height: preview.image_height,
+        image_rgba: preview.image_rgba,
     }
 }
 
-fn read_preview_text(path: &Path, extension: Option<&str>) -> (String, String) {
+struct PreviewContent {
+    preview_kind: String,
+    preview_text: String,
+    image_width: Option<usize>,
+    image_height: Option<usize>,
+    image_rgba: Option<Vec<u8>>,
+}
+
+fn read_preview(path: &Path, extension: Option<&str>) -> PreviewContent {
     let Some(kind) = preview_kind(extension) else {
-        return (
-            "metadata".to_string(),
-            "No inline preview for this file type yet.".to_string(),
-        );
+        return PreviewContent {
+            preview_kind: "metadata".to_string(),
+            preview_text: "No inline preview for this file type yet.".to_string(),
+            image_width: None,
+            image_height: None,
+            image_rgba: None,
+        };
     };
 
     match kind {
         "text" => match fs::read_to_string(path) {
-            Ok(text) => ("text".to_string(), truncate_preview(&text, 1_500)),
-            Err(err) => (
-                "text".to_string(),
-                format!("Unable to read text preview: {err}"),
-            ),
+            Ok(text) => PreviewContent {
+                preview_kind: "text".to_string(),
+                preview_text: truncate_preview(&text, 1_500),
+                image_width: None,
+                image_height: None,
+                image_rgba: None,
+            },
+            Err(err) => PreviewContent {
+                preview_kind: "text".to_string(),
+                preview_text: format!("Unable to read text preview: {err}"),
+                image_width: None,
+                image_height: None,
+                image_rgba: None,
+            },
         },
         "binary" => match fs::File::open(path) {
             Ok(mut file) => {
                 let mut buf = [0u8; 64];
                 match file.read(&mut buf) {
-                    Ok(read) => (
-                        "binary".to_string(),
-                        buf[..read]
+                    Ok(read) => PreviewContent {
+                        preview_kind: "binary".to_string(),
+                        preview_text: buf[..read]
                             .iter()
                             .map(|byte| format!("{byte:02X}"))
                             .collect::<Vec<_>>()
                             .join(" "),
-                    ),
-                    Err(err) => (
-                        "binary".to_string(),
-                        format!("Unable to read binary preview: {err}"),
-                    ),
+                        image_width: None,
+                        image_height: None,
+                        image_rgba: None,
+                    },
+                    Err(err) => PreviewContent {
+                        preview_kind: "binary".to_string(),
+                        preview_text: format!("Unable to read binary preview: {err}"),
+                        image_width: None,
+                        image_height: None,
+                        image_rgba: None,
+                    },
                 }
             }
-            Err(err) => (
-                "binary".to_string(),
-                format!("Unable to open file preview: {err}"),
-            ),
+            Err(err) => PreviewContent {
+                preview_kind: "binary".to_string(),
+                preview_text: format!("Unable to open file preview: {err}"),
+                image_width: None,
+                image_height: None,
+                image_rgba: None,
+            },
         },
-        "image" => (
-            "image".to_string(),
-            "Image preview placeholder. Metadata review is available; thumbnail rendering is the next enhancement.".to_string(),
-        ),
-        _ => (
-            "metadata".to_string(),
-            "No inline preview for this file type yet.".to_string(),
-        ),
+        "image" => read_image_preview(path),
+        _ => PreviewContent {
+            preview_kind: "metadata".to_string(),
+            preview_text: "No inline preview for this file type yet.".to_string(),
+            image_width: None,
+            image_height: None,
+            image_rgba: None,
+        },
+    }
+}
+
+fn read_image_preview(path: &Path) -> PreviewContent {
+    const MAX_DIMENSION: u32 = 320;
+
+    match image::open(path) {
+        Ok(image) => {
+            let image = image.thumbnail(MAX_DIMENSION, MAX_DIMENSION).to_rgba8();
+            let width = image.width() as usize;
+            let height = image.height() as usize;
+
+            PreviewContent {
+                preview_kind: "image".to_string(),
+                preview_text: format!("Thumbnail preview: {width} x {height}"),
+                image_width: Some(width),
+                image_height: Some(height),
+                image_rgba: Some(image.into_raw()),
+            }
+        }
+        Err(err) => PreviewContent {
+            preview_kind: "image".to_string(),
+            preview_text: format!("Unable to load image preview: {err}"),
+            image_width: None,
+            image_height: None,
+            image_rgba: None,
+        },
     }
 }
 
@@ -547,6 +609,33 @@ mod tests {
 
         assert_eq!(preview.preview_kind, "text");
         assert!(preview.preview_text.contains("hello preview panel"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preview_data_generates_image_thumbnail() {
+        let root = temp_dir("image-preview");
+        let file_path = root.join("sample.png");
+        let image = image::RgbaImage::from_pixel(16, 12, image::Rgba([20, 40, 60, 255]));
+        image.save(&file_path).unwrap();
+
+        let preview = build_preview_data(&ItemViewModel {
+            path: file_path,
+            size: 0,
+            modified_unix: Some(1),
+            is_protected: false,
+            suggested_keep: false,
+        });
+
+        assert_eq!(preview.preview_kind, "image");
+        assert!(preview.image_width.is_some_and(|width| width > 0 && width <= 320));
+        assert!(preview.image_height.is_some_and(|height| height > 0 && height <= 320));
+        assert!(preview.image_rgba.as_ref().is_some_and(|rgba| !rgba.is_empty()));
+        assert_eq!(
+            preview.image_rgba.as_ref().unwrap().len(),
+            preview.image_width.unwrap() * preview.image_height.unwrap() * 4
+        );
 
         let _ = fs::remove_dir_all(root);
     }
