@@ -1,6 +1,8 @@
 use dedupe_actions::{ActionKind, SelectionRule};
 use dedupe_core::{HashAlgorithm, ScanMode, ScanProgressPhase};
-use dedupe_gui::{GroupViewModel, GuiController, PreviewData, ResultsViewModel};
+use dedupe_gui::{
+    GroupViewModel, GuiController, LoadedReportSource, PreviewData, ResultsViewModel,
+};
 use eframe::egui;
 use eframe::egui::{ColorImage, TextureHandle, TextureOptions};
 use std::path::{Path, PathBuf};
@@ -30,12 +32,16 @@ struct DedupeForgeApp {
     quarantine_root_text: String,
     session_path_text: String,
     report_path_text: String,
+    report_db_path_text: String,
+    report_db_name_text: String,
+    report_db_filter_text: String,
     manifest_path_text: String,
     results_filter_text: String,
     selection_rule: SelectionRule,
     action_kind: ActionKind,
     selected_group_index: usize,
     selected_item_index: usize,
+    selected_report_db_id: Option<i64>,
     error_message: String,
     preview_texture_path: Option<PathBuf>,
     preview_texture: Option<TextureHandle>,
@@ -53,12 +59,16 @@ impl Default for DedupeForgeApp {
             quarantine_root_text: ".quarantine".to_string(),
             session_path_text: "dedupeforge-gui-session.json".to_string(),
             report_path_text: "dedupeforge-report.json".to_string(),
+            report_db_path_text: ".dedupeforge-reports.sqlite3".to_string(),
+            report_db_name_text: "gui-report".to_string(),
+            report_db_filter_text: String::new(),
             manifest_path_text: String::new(),
             results_filter_text: String::new(),
             selection_rule: SelectionRule::KeepSuggested,
             action_kind: ActionKind::QuarantineMove,
             selected_group_index: 0,
             selected_item_index: 0,
+            selected_report_db_id: None,
             error_message: String::new(),
             preview_texture_path: None,
             preview_texture: None,
@@ -79,6 +89,13 @@ impl DedupeForgeApp {
             .as_ref()
             .map(|path| path.display().to_string())
             .unwrap_or_default();
+        self.report_db_path_text = self
+            .controller
+            .state()
+            .report_db_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| ".dedupeforge-reports.sqlite3".to_string());
     }
 
     fn apply_profile_buffers(&mut self) {
@@ -180,6 +197,51 @@ impl DedupeForgeApp {
         match self
             .controller
             .load_report(Path::new(self.report_path_text.trim()))
+        {
+            Ok(_) => {
+                self.error_message.clear();
+                self.selected_group_index = 0;
+                self.selected_item_index = 0;
+            }
+            Err(err) => self.error_message = err.to_string(),
+        }
+    }
+
+    fn refresh_report_db(&mut self) {
+        match self
+            .controller
+            .refresh_report_db(Path::new(self.report_db_path_text.trim()))
+        {
+            Ok(reports) => {
+                self.error_message.clear();
+                self.selected_report_db_id = reports.first().map(|report| report.id);
+            }
+            Err(err) => self.error_message = err.to_string(),
+        }
+    }
+
+    fn store_report_in_db(&mut self) {
+        match self.controller.store_report_in_db(
+            Path::new(self.report_db_path_text.trim()),
+            self.report_db_name_text.as_str(),
+        ) {
+            Ok(id) => {
+                self.error_message.clear();
+                self.selected_report_db_id = Some(id);
+            }
+            Err(err) => self.error_message = err.to_string(),
+        }
+    }
+
+    fn open_report_from_db(&mut self) {
+        let Some(id) = self.selected_report_db_id else {
+            self.error_message = "Select a stored report first".to_string();
+            return;
+        };
+
+        match self
+            .controller
+            .load_report_from_db(Path::new(self.report_db_path_text.trim()), id)
         {
             Ok(_) => {
                 self.error_message.clear();
@@ -500,6 +562,66 @@ impl eframe::App for DedupeForgeApp {
                         self.load_report();
                     }
                 });
+                ui.add_space(8.0);
+                ui.label("Report Database");
+                ui.text_edit_singleline(&mut self.report_db_path_text);
+                ui.horizontal(|ui| {
+                    ui.label("Stored Name");
+                    ui.text_edit_singleline(&mut self.report_db_name_text);
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Refresh DB").clicked() {
+                        self.refresh_report_db();
+                    }
+                    if ui.button("Store In DB").clicked() {
+                        self.store_report_in_db();
+                    }
+                    if ui.button("Open From DB").clicked() {
+                        self.open_report_from_db();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Saved Report Filter");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.report_db_filter_text)
+                            .hint_text("Filter by id, name, mode, or risk"),
+                    );
+                    if ui.button("Clear").clicked() {
+                        self.report_db_filter_text.clear();
+                    }
+                });
+                egui::ScrollArea::vertical()
+                    .max_height(180.0)
+                    .show(ui, |ui| {
+                        let visible_reports = filtered_report_entries(
+                            &self.controller.state().stored_reports,
+                            self.report_db_filter_text.as_str(),
+                        );
+                        if visible_reports.is_empty() {
+                            ui.label("No stored reports loaded yet.");
+                        } else {
+                            for report in visible_reports {
+                                let selected = self.selected_report_db_id == Some(report.id);
+                                if ui
+                                    .selectable_label(
+                                        selected,
+                                        format!(
+                                            "#{} | {} | {} | {} groups | files={} | {}",
+                                            report.id,
+                                            report.name,
+                                            report.mode,
+                                            report.group_count,
+                                            report.scanned_files,
+                                            report.risk
+                                        ),
+                                    )
+                                    .clicked()
+                                {
+                                    self.selected_report_db_id = Some(report.id);
+                                }
+                            }
+                        }
+                    });
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -507,6 +629,10 @@ impl eframe::App for DedupeForgeApp {
 
             ui.heading("Results");
             if let Some(view) = view {
+                if let Some(source) = self.controller.state().last_report_source.as_ref() {
+                    ui.label(report_source_label(source));
+                    ui.add_space(6.0);
+                }
                 let filtered_group_indices =
                     filtered_group_indices(&view, self.results_filter_text.as_str());
                 ui.horizontal(|ui| {
@@ -948,4 +1074,47 @@ fn filtered_group_indices(view: &ResultsViewModel, filter_text: &str) -> Vec<usi
             (reason_matches || path_matches).then_some(index)
         })
         .collect()
+}
+
+fn filtered_report_entries<'a>(
+    reports: &'a [dedupe_report_db::StoredReportSummary],
+    filter_text: &str,
+) -> Vec<&'a dedupe_report_db::StoredReportSummary> {
+    let needle = filter_text.trim().to_ascii_lowercase();
+    if needle.is_empty() {
+        return reports.iter().collect();
+    }
+
+    reports
+        .iter()
+        .filter(|report| {
+            report.id.to_string().contains(&needle)
+                || report.name.to_ascii_lowercase().contains(&needle)
+                || report.mode.to_ascii_lowercase().contains(&needle)
+                || report.risk.to_ascii_lowercase().contains(&needle)
+        })
+        .collect()
+}
+
+fn report_source_label(source: &LoadedReportSource) -> String {
+    match source {
+        LoadedReportSource::Scan => "Source: current scan".to_string(),
+        LoadedReportSource::File(path) => format!("Source: report file {}", path.display()),
+        LoadedReportSource::ReportDb {
+            db_path,
+            id,
+            name,
+            mode,
+            risk,
+            created_at_unix,
+        } => format!(
+            "Source: report DB {} | #{} | {} | {} | {} | created {}",
+            db_path.display(),
+            id,
+            name,
+            mode,
+            risk,
+            created_at_unix
+        ),
+    }
 }

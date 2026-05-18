@@ -7,6 +7,7 @@ use dedupe_core::{
     scan_with_progress, CacheConfig, DuplicateGroup, HashAlgorithm, ScanCancelToken, ScanConfig,
     ScanMode, ScanProgress, ScanProgressPhase, ScanReport,
 };
+use dedupe_report_db::{ReportDb, StoredReportSummary};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Read;
@@ -144,10 +145,27 @@ pub struct PreviewData {
 pub struct GuiSessionState {
     pub profile: GuiScanProfile,
     pub last_report: Option<ScanReport>,
+    pub last_report_source: Option<LoadedReportSource>,
     pub last_action_plan: Option<ActionPlan>,
     pub last_manifest: Option<ActionManifest>,
+    pub report_db_path: Option<PathBuf>,
+    pub stored_reports: Vec<StoredReportSummary>,
     pub status_message: String,
     pub scan_progress: Option<ScanProgress>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum LoadedReportSource {
+    Scan,
+    File(PathBuf),
+    ReportDb {
+        db_path: PathBuf,
+        id: i64,
+        name: String,
+        mode: String,
+        risk: String,
+        created_at_unix: i64,
+    },
 }
 
 impl Default for GuiSessionState {
@@ -155,8 +173,11 @@ impl Default for GuiSessionState {
         Self {
             profile: GuiScanProfile::default(),
             last_report: None,
+            last_report_source: None,
             last_action_plan: None,
             last_manifest: None,
+            report_db_path: None,
+            stored_reports: Vec::new(),
             status_message: "Ready".to_string(),
             scan_progress: None,
         }
@@ -253,6 +274,7 @@ impl GuiController {
                                 report.duplicate_groups.len(),
                                 report.errors.len()
                             );
+                            self.state.last_report_source = Some(LoadedReportSource::Scan);
                             self.state.scan_progress = Some(ScanProgress {
                                 phase: ScanProgressPhase::Finished,
                                 current: report.scanned_files,
@@ -439,7 +461,67 @@ impl GuiController {
         );
         self.state.last_action_plan = None;
         self.state.last_manifest = None;
+        self.state.last_report_source = Some(LoadedReportSource::File(path.to_path_buf()));
         self.state.last_report = Some(report);
+        Ok(self.state.last_report.as_ref().expect("report just set"))
+    }
+
+    pub fn refresh_report_db(&mut self, path: &Path) -> Result<&[StoredReportSummary]> {
+        let db = ReportDb::open(path)?;
+        self.state.stored_reports = db.list_reports()?;
+        self.state.report_db_path = Some(path.to_path_buf());
+        self.state.status_message = format!(
+            "Loaded {} stored reports from {}",
+            self.state.stored_reports.len(),
+            path.display()
+        );
+        Ok(self.state.stored_reports.as_slice())
+    }
+
+    pub fn store_report_in_db(&mut self, path: &Path, name: &str) -> Result<i64> {
+        let report = self
+            .state
+            .last_report
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("run or load a report before storing it"))?;
+        let trimmed_name = name.trim();
+        if trimmed_name.is_empty() {
+            anyhow::bail!("enter a stored report name before saving to the report database");
+        }
+
+        let db = ReportDb::open(path)?;
+        let id = db.store_report(trimmed_name, report)?;
+        self.state.stored_reports = db.list_reports()?;
+        self.state.report_db_path = Some(path.to_path_buf());
+        self.state.status_message = format!(
+            "Stored report \"{}\" in {} as id {}",
+            trimmed_name,
+            path.display(),
+            id
+        );
+        Ok(id)
+    }
+
+    pub fn load_report_from_db(&mut self, path: &Path, id: i64) -> Result<&ScanReport> {
+        let db = ReportDb::open(path)?;
+        let stored = db.load_report(id)?;
+        self.state.stored_reports = db.list_reports()?;
+        self.state.report_db_path = Some(path.to_path_buf());
+        self.state.status_message = format!(
+            "Loaded stored report #{} ({})",
+            stored.summary.id, stored.summary.name
+        );
+        self.state.last_action_plan = None;
+        self.state.last_manifest = None;
+        self.state.last_report_source = Some(LoadedReportSource::ReportDb {
+            db_path: path.to_path_buf(),
+            id: stored.summary.id,
+            name: stored.summary.name.clone(),
+            mode: stored.summary.mode.clone(),
+            risk: stored.summary.risk.clone(),
+            created_at_unix: stored.summary.created_at_unix,
+        });
+        self.state.last_report = Some(stored.report);
         Ok(self.state.last_report.as_ref().expect("report just set"))
     }
 
@@ -766,6 +848,40 @@ mod tests {
         let mut loaded = GuiController::new();
         let report = loaded.load_report(&report_path).unwrap();
         assert_eq!(report.duplicate_groups.len(), 1);
+        assert!(matches!(
+            loaded.state().last_report_source,
+            Some(LoadedReportSource::File(_))
+        ));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn gui_controller_can_browse_and_open_report_db_entries() {
+        let root = temp_dir("report-db");
+        let db_path = root.join("reports.sqlite3");
+        fs::write(root.join("a.txt"), b"same").unwrap();
+        fs::write(root.join("b.txt"), b"same").unwrap();
+
+        let mut controller = GuiController::new();
+        controller.state_mut().profile.paths = vec![root.clone()];
+        controller.run_scan().unwrap();
+        while controller.is_scan_in_progress() {
+            controller.poll_scan_progress().unwrap();
+        }
+
+        let stored_id = controller.store_report_in_db(&db_path, "nightly").unwrap();
+        assert_eq!(controller.state().stored_reports.len(), 1);
+
+        let mut loaded = GuiController::new();
+        loaded.refresh_report_db(&db_path).unwrap();
+        assert_eq!(loaded.state().stored_reports.len(), 1);
+        let report = loaded.load_report_from_db(&db_path, stored_id).unwrap();
+        assert_eq!(report.duplicate_groups.len(), 1);
+        assert!(matches!(
+            loaded.state().last_report_source,
+            Some(LoadedReportSource::ReportDb { id, .. }) if id == stored_id
+        ));
 
         let _ = fs::remove_dir_all(root);
     }
