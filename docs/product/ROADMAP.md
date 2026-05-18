@@ -38,15 +38,16 @@ Exit criteria:
 
 Goal: make repeated large scans practical.
 
-Planned:
+Implemented:
 
 - SQLite cache
-- file identity table
-- file metadata table
-- full hash table
-- partial hash table
+- file path and metadata cache records
+- full hash cache
+- partial hash cache
 - cache invalidation on size/mtime/path changes
 - scan profile config files
+- named scan presets
+- cache clear/rebuild controls
 
 Exit criteria:
 
@@ -58,13 +59,14 @@ Exit criteria:
 
 Goal: allow cleanup without permanent damage.
 
-Planned:
+Implemented:
 
 - action planner
 - dry-run action output
 - quarantine folder move
 - undo manifest
 - action log
+- restore from manifest
 - protected path enforcement
 - group invariant: never remove all files in a group
 
@@ -78,7 +80,7 @@ Exit criteria:
 
 Goal: AllDup-style review UI backed by the same engine.
 
-Planned:
+Implemented:
 
 - source selection screen
 - scan profile screen
@@ -98,7 +100,7 @@ Exit criteria:
 
 Goal: handle non-content workflows.
 
-Planned:
+Implemented:
 
 - normalized filename matching
 - token matching
@@ -116,7 +118,7 @@ Exit criteria:
 
 Goal: photo cleanup workflows.
 
-Planned:
+Implemented:
 
 - perceptual hashing
 - selectable hash sizes
@@ -135,7 +137,7 @@ Exit criteria:
 
 Goal: large media library cleanup.
 
-Planned:
+Implemented:
 
 - FFmpeg/ffprobe integration
 - sampled video frame hashes
@@ -153,13 +155,13 @@ Exit criteria:
 
 Goal: power-user cleanup options.
 
-Planned:
+Implemented:
 
 - hard link replacement
 - symlink replacement
 - archive scanning
 - NAS/network conservative mode
-- scheduled scan reports
+- scheduled scan reports via recurring report-database runs
 - result database browser
 
 Exit criteria:

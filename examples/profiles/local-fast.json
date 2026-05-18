@@ -1,0 +1,9 @@
+{
+  "preset": "default",
+  "cache": true,
+  "output": "human",
+  "partial_bytes": 1048576,
+  "min_size": 1,
+  "ignore_hidden": true,
+  "byte_verify": false
+}

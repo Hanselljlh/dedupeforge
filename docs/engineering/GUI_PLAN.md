@@ -1,6 +1,20 @@
 # GUI plan
 
-Status: planned.
+Status: implemented in first prototype form.
+
+Current implementation:
+
+- `dedupe-gui` crate exists
+- GUI session state is serializable
+- controller APIs can run scans and action flows through the shared backend
+- view-model shaping exists for grouped result presentation
+- `egui`/`eframe` is the chosen native toolkit for the first prototype
+- source selection, scan profile controls, grouped results, and action queue controls are wired into the prototype window
+- report export/import is wired into the prototype window
+- preview panel exists for metadata plus inline text/binary preview
+- similar image mode is wired into the prototype window with an explicit false-positive warning
+- similar video and similar audio modes are wired into the prototype window with the same false-positive warning
+- richer media-specific preview is still pending
 
 The GUI should provide an AllDup-style review workflow while using the Rust backend.
 
@@ -89,11 +103,11 @@ Examples:
 
 ## Technology options
 
-Recommended path:
+Current prototype path:
 
 - Rust backend remains source of truth
-- Tauri frontend for desktop app
-- frontend table virtualization for large result sets
+- `egui`/`eframe` native frontend for the first prototype
+- iterate on workflow completeness before deciding whether a later Tauri front-end is still needed
 
 Alternative paths:
 

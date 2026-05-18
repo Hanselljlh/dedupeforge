@@ -1,14 +1,17 @@
-use crate::fs_walk::{collect_files, FileEntry};
-use crate::hash::{hash_file, hash_file_prefix, HashAlgorithm};
+use crate::fs_walk::{collect_files, FileEntry, FileIdentity};
+use crate::hash::{hash_bytes, hash_file, hash_file_prefix, HashAlgorithm};
+use crate::similar::{scan_duplicate_folders, scan_similar_images, scan_similar_names};
 use crate::verify::files_equal;
 use anyhow::Result;
+use dedupe_cache::{Cache, CacheFileIdentity, CacheHashKey, CacheLookupPolicy, HashScope};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ScanConfig {
+    pub mode: ScanMode,
     pub paths: Vec<PathBuf>,
     pub protected_roots: Vec<PathBuf>,
     pub algorithm: HashAlgorithm,
@@ -16,6 +19,23 @@ pub struct ScanConfig {
     pub min_size: u64,
     pub ignore_hidden: bool,
     pub byte_verify: bool,
+    pub cache: CacheConfig,
+    pub name_similarity_threshold: u8,
+    pub folder_similarity_threshold: u8,
+    pub image_hash_size: u32,
+    pub image_hamming_threshold: u32,
+    pub image_rotation_invariant: bool,
+    pub media_duration_tolerance_secs: f64,
+    pub media_fingerprint_distance_threshold: u32,
+    pub scan_archives: bool,
+    pub ignore_patterns: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CacheConfig {
+    pub enabled: bool,
+    pub path: Option<PathBuf>,
+    pub modified_time_tolerance_secs: i64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -38,14 +58,51 @@ pub struct DuplicateGroup {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ScanReport {
+    pub mode: ScanMode,
     pub scanned_files: usize,
     pub candidate_size_groups: usize,
+    pub cache_hits: usize,
+    pub cache_misses: usize,
     pub duplicate_groups: Vec<DuplicateGroup>,
     pub errors: Vec<String>,
+    pub risk: MatchRisk,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ScanMode {
+    Exact,
+    SimilarNames,
+    SimilarImages,
+    SimilarVideos,
+    SimilarAudio,
+    DuplicateFolders,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum MatchRisk {
+    Low,
+    Medium,
+    High,
+}
+
+pub fn scan(config: &ScanConfig) -> Result<ScanReport> {
+    match config.mode {
+        ScanMode::Exact => scan_exact(config),
+        ScanMode::SimilarNames => scan_similar_names(config),
+        ScanMode::SimilarImages => scan_similar_images(config),
+        ScanMode::SimilarVideos => crate::similar::scan_similar_videos(config),
+        ScanMode::SimilarAudio => crate::similar::scan_similar_audio(config),
+        ScanMode::DuplicateFolders => scan_duplicate_folders(config),
+    }
 }
 
 pub fn scan_exact(config: &ScanConfig) -> Result<ScanReport> {
-    let files = collect_files(&config.paths, &config.protected_roots, config.ignore_hidden)?
+    let cache = open_cache_if_enabled(&config.cache)?;
+    let collected = collect_files(&config.paths, &config.protected_roots, config.ignore_hidden)?;
+    let files = collected
+        .files
         .into_iter()
         .filter(|f| f.size >= config.min_size)
         .collect::<Vec<_>>();
@@ -54,22 +111,53 @@ pub fn scan_exact(config: &ScanConfig) -> Result<ScanReport> {
     let by_size = group_by_size(files);
     let candidate_size_groups = by_size.values().filter(|g| g.len() > 1).count();
 
-    let mut errors = Vec::new();
+    let mut stats = HashRunStats {
+        errors: collected.errors,
+        ..Default::default()
+    };
     let size_candidate_files: Vec<FileEntry> = by_size.into_values().flatten().collect();
-    let partial_candidates = hash_files(size_candidate_files, config.algorithm, config.partial_bytes, true, &mut errors);
-    let partial_candidate_files: Vec<FileEntry> = partial_candidates.into_values().flatten().collect();
-    let full_candidates = hash_files(partial_candidate_files, config.algorithm, 0, false, &mut errors);
+    let partial_candidates = hash_files(
+        cache.as_ref(),
+        size_candidate_files,
+        HashRunOptions {
+            algorithm: config.algorithm,
+            partial_bytes: config.partial_bytes,
+            partial: true,
+            modified_time_tolerance_secs: config.cache.modified_time_tolerance_secs,
+        },
+        &mut stats,
+    );
+    let partial_candidate_files: Vec<FileEntry> =
+        partial_candidates.into_values().flatten().collect();
+    let full_candidates = hash_files(
+        cache.as_ref(),
+        partial_candidate_files,
+        HashRunOptions {
+            algorithm: config.algorithm,
+            partial_bytes: 0,
+            partial: false,
+            modified_time_tolerance_secs: config.cache.modified_time_tolerance_secs,
+        },
+        &mut stats,
+    );
 
     let mut duplicate_groups = Vec::new();
 
     for ((_size, full_hash), mut group) in full_candidates {
-        if group.len() < 2 { continue; }
+        if group.len() < 2 {
+            continue;
+        }
         group.sort_by_key(item_sort_key);
 
         if config.byte_verify {
-            for verified in split_by_byte_equality(&group, &mut errors) {
+            for verified in split_by_byte_equality(&group, &mut stats.errors) {
                 if verified.len() > 1 {
-                    duplicate_groups.push(make_group(verified, config.algorithm, full_hash.clone(), true));
+                    duplicate_groups.push(make_group(
+                        verified,
+                        config.algorithm,
+                        full_hash.clone(),
+                        true,
+                    ));
                 }
             }
         } else {
@@ -77,13 +165,29 @@ pub fn scan_exact(config: &ScanConfig) -> Result<ScanReport> {
         }
     }
 
-    duplicate_groups.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.items[0].path.cmp(&b.items[0].path)));
+    duplicate_groups.sort_by(|a, b| {
+        b.size
+            .cmp(&a.size)
+            .then_with(|| a.items[0].path.cmp(&b.items[0].path))
+    });
+    if config.scan_archives {
+        duplicate_groups.extend(scan_zip_archives_exact(config, &mut stats.errors)?);
+        duplicate_groups.sort_by(|a, b| {
+            b.size
+                .cmp(&a.size)
+                .then_with(|| a.items[0].path.cmp(&b.items[0].path))
+        });
+    }
 
     Ok(ScanReport {
+        mode: ScanMode::Exact,
         scanned_files,
         candidate_size_groups,
+        cache_hits: stats.cache_hits,
+        cache_misses: stats.cache_misses,
         duplicate_groups,
-        errors,
+        errors: stats.errors,
+        risk: MatchRisk::Low,
     })
 }
 
@@ -96,40 +200,273 @@ fn group_by_size(files: Vec<FileEntry>) -> HashMap<u64, Vec<FileEntry>> {
     map
 }
 
-fn hash_files(
-    files: Vec<FileEntry>,
+#[derive(Clone, Copy)]
+struct HashRunOptions {
     algorithm: HashAlgorithm,
     partial_bytes: u64,
     partial: bool,
-    errors: &mut Vec<String>,
+    modified_time_tolerance_secs: i64,
+}
+
+#[derive(Default)]
+struct HashRunStats {
+    errors: Vec<String>,
+    cache_hits: usize,
+    cache_misses: usize,
+}
+
+type HashOutcome = (FileEntry, Result<(String, bool), String>);
+
+fn hash_files(
+    cache: Option<&Cache>,
+    files: Vec<FileEntry>,
+    options: HashRunOptions,
+    stats: &mut HashRunStats,
 ) -> HashMap<(u64, String), Vec<FileEntry>> {
-    let hashed: Vec<(FileEntry, Option<String>)> = files
-        .into_par_iter()
-        .map(|file| {
-            let hash_result = if partial {
-                hash_file_prefix(&file.path, algorithm, partial_bytes)
-            } else {
-                hash_file(&file.path, algorithm)
-            };
-            match hash_result {
-                Ok(hash) => (file, Some(hash)),
-                Err(e) => (file, Some(format!("ERROR::{e}"))),
-            }
-        })
-        .collect();
+    let hashed: Vec<HashOutcome> = if let Some(cache) = cache {
+        files
+            .into_iter()
+            .map(|file| {
+                let hash_result = hash_with_cache(
+                    Some(cache),
+                    &file,
+                    options.algorithm,
+                    options.partial_bytes,
+                    options.partial,
+                    options.modified_time_tolerance_secs,
+                );
+                match hash_result {
+                    Ok((hash, used_cache)) => (file, Ok((hash, used_cache))),
+                    Err(e) => (file, Err(e.to_string())),
+                }
+            })
+            .collect()
+    } else {
+        files
+            .into_par_iter()
+            .map(|file| {
+                let hash_result = hash_without_cache(
+                    &file,
+                    options.algorithm,
+                    options.partial_bytes,
+                    options.partial,
+                );
+                match hash_result {
+                    Ok((hash, used_cache)) => (file, Ok((hash, used_cache))),
+                    Err(e) => (file, Err(e.to_string())),
+                }
+            })
+            .collect()
+    };
 
     let mut map: HashMap<(u64, String), Vec<FileEntry>> = HashMap::new();
 
     for (file, maybe_hash) in hashed {
         match maybe_hash {
-            Some(hash) if hash.starts_with("ERROR::") => errors.push(format!("{}: {}", file.path.display(), hash.trim_start_matches("ERROR::"))),
-            Some(hash) => { map.entry((file.size, hash)).or_default().push(file); }
-            None => {}
+            Err(error) => stats
+                .errors
+                .push(format!("{}: {error}", file.path.display())),
+            Ok((hash, used_cache)) => {
+                if used_cache {
+                    stats.cache_hits += 1;
+                } else {
+                    stats.cache_misses += 1;
+                }
+                map.entry((file.size, hash)).or_default().push(file);
+            }
         }
     }
 
     map.retain(|_, group| group.len() > 1);
     map
+}
+
+fn hash_without_cache(
+    file: &FileEntry,
+    algorithm: HashAlgorithm,
+    partial_bytes: u64,
+    partial: bool,
+) -> Result<(String, bool)> {
+    let hash = if partial {
+        hash_file_prefix(&file.path, algorithm, partial_bytes)?
+    } else {
+        hash_file(&file.path, algorithm)?
+    };
+    Ok((hash, false))
+}
+
+fn hash_with_cache(
+    cache: Option<&Cache>,
+    file: &FileEntry,
+    algorithm: HashAlgorithm,
+    partial_bytes: u64,
+    partial: bool,
+    modified_time_tolerance_secs: i64,
+) -> Result<(String, bool)> {
+    let scope = if partial {
+        HashScope::Partial {
+            bytes_hashed: partial_bytes,
+        }
+    } else {
+        HashScope::Full
+    };
+    let label = algorithm.label();
+
+    if let Some(cache) = cache {
+        let identity = cache_identity(file);
+        if let Some(found) = cache.lookup_hash(
+            &CacheHashKey {
+                path: &file.path,
+                identity: identity.as_ref(),
+                size: file.size,
+                modified_unix: file.modified_unix,
+                algorithm: label,
+                scope,
+            },
+            CacheLookupPolicy {
+                modified_time_tolerance_secs,
+            },
+        )? {
+            cache.mark_seen(&file.path)?;
+            return Ok((found.hash, true));
+        }
+    }
+
+    let hash = if partial {
+        hash_file_prefix(&file.path, algorithm, partial_bytes)?
+    } else {
+        hash_file(&file.path, algorithm)?
+    };
+
+    if let Some(cache) = cache {
+        let identity = cache_identity(file);
+        cache.store_hash(
+            &CacheHashKey {
+                path: &file.path,
+                identity: identity.as_ref(),
+                size: file.size,
+                modified_unix: file.modified_unix,
+                algorithm: label,
+                scope,
+            },
+            &hash,
+        )?;
+    }
+
+    Ok((hash, false))
+}
+
+fn scan_zip_archives_exact(
+    config: &ScanConfig,
+    errors: &mut Vec<String>,
+) -> Result<Vec<DuplicateGroup>> {
+    let mut by_hash: HashMap<(u64, String), Vec<DuplicateItem>> = HashMap::new();
+
+    for root in &config.paths {
+        for entry in walkdir::WalkDir::new(root)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+        {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let path = entry.path();
+            if !matches!(
+                path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| ext.to_ascii_lowercase())
+                    .as_deref(),
+                Some("zip")
+            ) {
+                continue;
+            }
+
+            if let Err(err) = collect_zip_members(path, config, &mut by_hash) {
+                errors.push(format!("{}: {err}", path.display()));
+            }
+        }
+    }
+
+    let mut groups = Vec::new();
+    for ((size, hash), mut items) in by_hash {
+        if items.len() < 2 {
+            continue;
+        }
+        items.sort_by(|a, b| a.path.cmp(&b.path));
+        if let Some(first) = items.first_mut() {
+            first.suggested_keep = true;
+        }
+        groups.push(DuplicateGroup {
+            size,
+            algorithm: format!("{} (archive)", config.algorithm.label()),
+            hash,
+            reason: "same archive member size + same full hash".to_string(),
+            items,
+        });
+    }
+
+    Ok(groups)
+}
+
+fn collect_zip_members(
+    archive_path: &Path,
+    config: &ScanConfig,
+    by_hash: &mut HashMap<(u64, String), Vec<DuplicateItem>>,
+) -> Result<()> {
+    let file = std::fs::File::open(archive_path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+    for index in 0..archive.len() {
+        let mut member = archive.by_index(index)?;
+        if !member.is_file() {
+            continue;
+        }
+        let size = member.size();
+        if size < config.min_size {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        use std::io::Read;
+        member.read_to_end(&mut bytes)?;
+        let hash = hash_bytes(&bytes, config.algorithm)?;
+        let pseudo_path = PathBuf::from(format!("{}!{}", archive_path.display(), member.name()));
+        by_hash
+            .entry((size, hash.clone()))
+            .or_default()
+            .push(DuplicateItem {
+                path: pseudo_path,
+                size,
+                modified_unix: None,
+                is_protected: true,
+                suggested_keep: false,
+            });
+    }
+    Ok(())
+}
+
+fn cache_identity(file: &FileEntry) -> Option<CacheFileIdentity> {
+    file.identity
+        .as_ref()
+        .map(cache_identity_from_file_identity)
+}
+
+fn cache_identity_from_file_identity(identity: &FileIdentity) -> CacheFileIdentity {
+    CacheFileIdentity {
+        device_id: identity.device_id.clone(),
+        inode: identity.inode.clone(),
+    }
+}
+
+fn open_cache_if_enabled(config: &CacheConfig) -> Result<Option<Cache>> {
+    if !config.enabled {
+        return Ok(None);
+    }
+
+    let path = config
+        .path
+        .as_deref()
+        .unwrap_or_else(|| Path::new(".dedupeforge-cache.sqlite3"));
+    Ok(Some(Cache::open(path)?))
 }
 
 fn split_by_byte_equality(group: &[FileEntry], errors: &mut Vec<String>) -> Vec<Vec<FileEntry>> {
@@ -144,7 +481,10 @@ fn split_by_byte_equality(group: &[FileEntry], errors: &mut Vec<String>) -> Vec<
                     continue 'outer;
                 }
                 Ok(false) => {}
-                Err(e) => errors.push(format!("byte verify failed for {}: {e}", item.path.display())),
+                Err(e) => errors.push(format!(
+                    "byte verify failed for {}: {e}",
+                    item.path.display()
+                )),
             }
         }
         verified_groups.push(vec![item]);
@@ -153,16 +493,25 @@ fn split_by_byte_equality(group: &[FileEntry], errors: &mut Vec<String>) -> Vec<
     verified_groups
 }
 
-fn make_group(mut files: Vec<FileEntry>, algorithm: HashAlgorithm, hash: String, byte_verified: bool) -> DuplicateGroup {
+fn make_group(
+    mut files: Vec<FileEntry>,
+    algorithm: HashAlgorithm,
+    hash: String,
+    byte_verified: bool,
+) -> DuplicateGroup {
     files.sort_by_key(item_sort_key);
     let keep_index = choose_keep_index(&files);
-    let items = files.into_iter().enumerate().map(|(idx, f)| DuplicateItem {
-        path: f.path,
-        size: f.size,
-        modified_unix: f.modified_unix,
-        is_protected: f.is_protected,
-        suggested_keep: idx == keep_index,
-    }).collect();
+    let items = files
+        .into_iter()
+        .enumerate()
+        .map(|(idx, f)| DuplicateItem {
+            path: f.path,
+            size: f.size,
+            modified_unix: f.modified_unix,
+            is_protected: f.is_protected,
+            suggested_keep: idx == keep_index,
+        })
+        .collect::<Vec<_>>();
 
     DuplicateGroup {
         size: items_first_size(&items),
@@ -194,130 +543,470 @@ fn item_sort_key(f: &FileEntry) -> (bool, Option<i64>, usize, String) {
     )
 }
 
-
 #[cfg(test)]
 mod tests {
-        use super::*;
-        use std::fs;
-        use tempfile::tempdir;
+    use super::*;
+    use std::fs;
+    use std::io::Write;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn base_config(paths: Vec<PathBuf>, protected: Vec<PathBuf>) -> ScanConfig {
-                ScanConfig {
-                                paths,
-                                protected_roots: protected,
-                                algorithm: HashAlgorithm::Blake3,
-                                partial_bytes: 4096,
-                                min_size: 1,
-                                ignore_hidden: false,
-                                byte_verify: false,
-                }
-    }
-
-    fn write(dir: &std::path::Path, name: &str, content: &[u8]) {
-                fs::write(dir.join(name), content).unwrap();
+    fn temp_dir(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("dedupeforge-scan-{unique}-{name}"));
+        fs::create_dir_all(&path).unwrap();
+        path
     }
 
     #[test]
-        fn two_identical_files_form_one_group() {
-                    let dir = tempdir().unwrap();
-                    write(dir.path(), "a.txt", b"duplicate content");
-                    write(dir.path(), "b.txt", b"duplicate content");
-                    write(dir.path(), "c.txt", b"unique content here");
-                    let report = scan_exact(&base_config(vec![dir.path().to_path_buf()], vec![])).unwrap();
-                    assert_eq!(report.duplicate_groups.len(), 1);
-                    assert_eq!(report.duplicate_groups[0].items.len(), 2);
-        }
+    fn exact_scan_reports_duplicate_group_and_keep_candidate() {
+        let root = temp_dir("scan-basic");
+        let archive = root.join("archive");
+        let current = root.join("current");
+        fs::create_dir_all(&archive).unwrap();
+        fs::create_dir_all(&current).unwrap();
+
+        fs::write(archive.join("photo.jpg"), b"same-image-bytes").unwrap();
+        fs::write(current.join("photo-copy.jpg"), b"same-image-bytes").unwrap();
+        fs::write(current.join("unique.jpg"), b"unique-content!").unwrap();
+
+        let config = ScanConfig {
+            mode: ScanMode::Exact,
+            paths: vec![root.clone()],
+            protected_roots: vec![archive.clone()],
+            algorithm: HashAlgorithm::Blake3,
+            partial_bytes: 4,
+            min_size: 1,
+            ignore_hidden: true,
+            byte_verify: false,
+            cache: CacheConfig {
+                enabled: false,
+                path: None,
+                modified_time_tolerance_secs: 0,
+            },
+            name_similarity_threshold: 85,
+            folder_similarity_threshold: 85,
+            image_hash_size: 8,
+            image_hamming_threshold: 12,
+            image_rotation_invariant: false,
+            media_duration_tolerance_secs: 2.0,
+            media_fingerprint_distance_threshold: 32,
+            scan_archives: false,
+            ignore_patterns: Vec::new(),
+        };
+
+        let report = scan_exact(&config).unwrap();
+
+        assert_eq!(report.scanned_files, 3);
+        assert_eq!(report.candidate_size_groups, 1);
+        assert_eq!(report.cache_hits, 0);
+        assert_eq!(report.duplicate_groups.len(), 1);
+        assert!(report.errors.is_empty());
+
+        let group = &report.duplicate_groups[0];
+        assert_eq!(group.reason, "same size + same full hash");
+        assert_eq!(group.items.len(), 2);
+        assert_eq!(group.items.iter().filter(|i| i.suggested_keep).count(), 1);
+        assert!(group
+            .items
+            .iter()
+            .any(|i| i.is_protected && i.suggested_keep));
+
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
-        fn no_duplicates_produces_empty_groups() {
-                    let dir = tempdir().unwrap();
-                    write(dir.path(), "a.txt", b"aaa");
-                    write(dir.path(), "b.txt", b"bbb");
-                    write(dir.path(), "c.txt", b"ccc");
-                    let report = scan_exact(&base_config(vec![dir.path().to_path_buf()], vec![])).unwrap();
-                    assert_eq!(report.duplicate_groups.len(), 0);
-                    assert_eq!(report.scanned_files, 3);
-        }
+    fn byte_verification_reason_is_reported_when_enabled() {
+        let root = temp_dir("scan-verify");
+        fs::write(root.join("a.bin"), b"verified-content").unwrap();
+        fs::write(root.join("b.bin"), b"verified-content").unwrap();
+
+        let config = ScanConfig {
+            mode: ScanMode::Exact,
+            paths: vec![root.clone()],
+            protected_roots: vec![],
+            algorithm: HashAlgorithm::Sha256,
+            partial_bytes: 8,
+            min_size: 1,
+            ignore_hidden: true,
+            byte_verify: true,
+            cache: CacheConfig {
+                enabled: false,
+                path: None,
+                modified_time_tolerance_secs: 0,
+            },
+            name_similarity_threshold: 85,
+            folder_similarity_threshold: 85,
+            image_hash_size: 8,
+            image_hamming_threshold: 12,
+            image_rotation_invariant: false,
+            media_duration_tolerance_secs: 2.0,
+            media_fingerprint_distance_threshold: 32,
+            scan_archives: false,
+            ignore_patterns: Vec::new(),
+        };
+
+        let report = scan_exact(&config).unwrap();
+
+        assert_eq!(report.duplicate_groups.len(), 1);
+        assert_eq!(
+            report.duplicate_groups[0].reason,
+            "same size + same full hash + byte-by-byte verified"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
-        fn files_below_min_size_are_excluded() {
-                    let dir = tempdir().unwrap();
-                    write(dir.path(), "a.txt", b"x");
-                    write(dir.path(), "b.txt", b"x");
-                    let mut config = base_config(vec![dir.path().to_path_buf()], vec![]);
-                    config.min_size = 100;
-                    let report = scan_exact(&config).unwrap();
-                    assert_eq!(report.scanned_files, 0);
-                    assert_eq!(report.duplicate_groups.len(), 0);
-        }
+    fn second_scan_reuses_cached_hashes() {
+        let root = temp_dir("scan-cache");
+        let cache_path = root.join("cache.sqlite3");
+        fs::write(root.join("a.bin"), b"same-bytes").unwrap();
+        fs::write(root.join("b.bin"), b"same-bytes").unwrap();
+
+        let config = ScanConfig {
+            mode: ScanMode::Exact,
+            paths: vec![root.clone()],
+            protected_roots: vec![],
+            algorithm: HashAlgorithm::Blake3,
+            partial_bytes: 4,
+            min_size: 1,
+            ignore_hidden: true,
+            byte_verify: false,
+            cache: CacheConfig {
+                enabled: true,
+                path: Some(cache_path),
+                modified_time_tolerance_secs: 0,
+            },
+            name_similarity_threshold: 85,
+            folder_similarity_threshold: 85,
+            image_hash_size: 8,
+            image_hamming_threshold: 12,
+            image_rotation_invariant: false,
+            media_duration_tolerance_secs: 2.0,
+            media_fingerprint_distance_threshold: 32,
+            scan_archives: false,
+            ignore_patterns: Vec::new(),
+        };
+
+        let first = scan_exact(&config).unwrap();
+        let second = scan_exact(&config).unwrap();
+
+        assert_eq!(first.cache_hits, 0);
+        assert!(second.cache_hits >= 2);
+
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
-        fn protected_item_is_suggested_keep() {
-                    let dir = tempdir().unwrap();
-                    let archive = dir.path().join("archive");
-                    fs::create_dir(&archive).unwrap();
-                    write(dir.path(), "copy.txt", b"shared content here");
-                    write(&archive, "original.txt", b"shared content here");
-                    let report = scan_exact(&base_config(
-                                    vec![dir.path().to_path_buf()],
-                                    vec![archive],
-                                )).unwrap();
-                    assert_eq!(report.duplicate_groups.len(), 1);
-                    let keep = report.duplicate_groups[0].items.iter().find(|i| i.suggested_keep).unwrap();
-                    assert!(keep.is_protected);
-        }
+    fn scan_continues_when_hashing_one_candidate_fails() {
+        let root = temp_dir("hash-error");
+        let archive = root.join("archive");
+        let current = root.join("current");
+        fs::create_dir_all(&archive).unwrap();
+        fs::create_dir_all(&current).unwrap();
 
-                            #[test]
-        fn scanned_files_count_matches_actual_files() {
-                    let dir = tempdir().unwrap();
-                    write(dir.path(), "a.txt", b"aaa");
-                    write(dir.path(), "b.txt", b"bbb");
-                    write(dir.path(), "c.txt", b"ccc");
-                    let report = scan_exact(&base_config(vec![dir.path().to_path_buf()], vec![])).unwrap();
-                    assert_eq!(report.scanned_files, 3);
-        }
+        let keep = archive.join("keep.txt");
+        let copy = current.join("copy.txt");
+        let missing = current.join("missing.txt");
+
+        fs::write(&keep, b"same").unwrap();
+        fs::write(&copy, b"same").unwrap();
+        fs::write(&missing, b"same").unwrap();
+
+        let mut candidate_files = vec![
+            FileEntry {
+                path: keep.clone(),
+                size: 4,
+                modified_unix: Some(1),
+                identity: None,
+                is_protected: true,
+            },
+            FileEntry {
+                path: copy.clone(),
+                size: 4,
+                modified_unix: Some(2),
+                identity: None,
+                is_protected: false,
+            },
+            FileEntry {
+                path: missing.clone(),
+                size: 4,
+                modified_unix: Some(3),
+                identity: None,
+                is_protected: false,
+            },
+        ];
+
+        fs::remove_file(&missing).unwrap();
+
+        let mut stats = HashRunStats::default();
+        let hashed = hash_files(
+            None,
+            std::mem::take(&mut candidate_files),
+            HashRunOptions {
+                algorithm: HashAlgorithm::Blake3,
+                partial_bytes: 0,
+                partial: false,
+                modified_time_tolerance_secs: 0,
+            },
+            &mut stats,
+        );
+
+        assert_eq!(stats.errors.len(), 1);
+        assert!(stats.errors[0].contains("missing.txt"));
+        assert_eq!(hashed.len(), 1);
+        assert_eq!(hashed.values().next().unwrap().len(), 2);
+
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
-        fn algorithm_label_appears_in_group() {
-                    let dir = tempdir().unwrap();
-                    write(dir.path(), "a.txt", b"same");
-                    write(dir.path(), "b.txt", b"same");
-                    let report = scan_exact(&base_config(vec![dir.path().to_path_buf()], vec![])).unwrap();
-                    assert_eq!(report.duplicate_groups[0].algorithm, "blake3");
-        }
+    fn cache_reuses_hashes_when_modified_time_is_within_tolerance() {
+        let root = temp_dir("scan-cache-tolerance");
+        let cache_path = root.join("cache.sqlite3");
+        let first = root.join("first.bin");
+        let second = root.join("second.bin");
+        fs::write(&first, b"same-bytes").unwrap();
+        fs::write(&second, b"same-bytes").unwrap();
+
+        let base = ScanConfig {
+            mode: ScanMode::Exact,
+            paths: vec![root.clone()],
+            protected_roots: vec![],
+            algorithm: HashAlgorithm::Blake3,
+            partial_bytes: 4,
+            min_size: 1,
+            ignore_hidden: true,
+            byte_verify: false,
+            cache: CacheConfig {
+                enabled: true,
+                path: Some(cache_path.clone()),
+                modified_time_tolerance_secs: 0,
+            },
+            name_similarity_threshold: 85,
+            folder_similarity_threshold: 85,
+            image_hash_size: 8,
+            image_hamming_threshold: 12,
+            image_rotation_invariant: false,
+            media_duration_tolerance_secs: 2.0,
+            media_fingerprint_distance_threshold: 32,
+            scan_archives: false,
+            ignore_patterns: Vec::new(),
+        };
+
+        let _ = scan_exact(&base).unwrap();
+
+        let cache = Cache::open(&cache_path).unwrap();
+        cache
+            .store_hash(
+                &CacheHashKey {
+                    path: &first,
+                    identity: None,
+                    size: 10,
+                    modified_unix: Some(100),
+                    algorithm: "blake3",
+                    scope: HashScope::Partial { bytes_hashed: 4 },
+                },
+                "synthetic-partial",
+            )
+            .unwrap();
+        cache
+            .store_hash(
+                &CacheHashKey {
+                    path: &second,
+                    identity: None,
+                    size: 10,
+                    modified_unix: Some(100),
+                    algorithm: "blake3",
+                    scope: HashScope::Partial { bytes_hashed: 4 },
+                },
+                "synthetic-partial",
+            )
+            .unwrap();
+        cache
+            .store_hash(
+                &CacheHashKey {
+                    path: &first,
+                    identity: None,
+                    size: 10,
+                    modified_unix: Some(100),
+                    algorithm: "blake3",
+                    scope: HashScope::Full,
+                },
+                "synthetic-full",
+            )
+            .unwrap();
+        cache
+            .store_hash(
+                &CacheHashKey {
+                    path: &second,
+                    identity: None,
+                    size: 10,
+                    modified_unix: Some(100),
+                    algorithm: "blake3",
+                    scope: HashScope::Full,
+                },
+                "synthetic-full",
+            )
+            .unwrap();
+
+        let candidate_files = vec![
+            FileEntry {
+                path: first,
+                size: 10,
+                modified_unix: Some(102),
+                identity: None,
+                is_protected: false,
+            },
+            FileEntry {
+                path: second,
+                size: 10,
+                modified_unix: Some(102),
+                identity: None,
+                is_protected: false,
+            },
+        ];
+
+        let mut stats = HashRunStats::default();
+        let hashed = hash_files(
+            Some(&cache),
+            candidate_files,
+            HashRunOptions {
+                algorithm: HashAlgorithm::Blake3,
+                partial_bytes: 4,
+                partial: true,
+                modified_time_tolerance_secs: 2,
+            },
+            &mut stats,
+        );
+
+        assert!(stats.errors.is_empty());
+        assert_eq!(stats.cache_hits, 2);
+        assert_eq!(stats.cache_misses, 0);
+        assert_eq!(hashed.len(), 1);
+
+        drop(cache);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
-        fn byte_verify_mode_finds_duplicates_and_sets_reason() {
-                    let dir = tempdir().unwrap();
-                    write(dir.path(), "a.txt", b"verified content");
-                    write(dir.path(), "b.txt", b"verified content");
-                    let mut config = base_config(vec![dir.path().to_path_buf()], vec![]);
-                    config.byte_verify = true;
-                    let report = scan_exact(&config).unwrap();
-                    assert_eq!(report.duplicate_groups.len(), 1);
-                    assert!(report.duplicate_groups[0].reason.contains("byte-by-byte verified"));
-        }
+    fn cache_reuses_hashes_when_path_changes_but_identity_matches() {
+        let cache_path = temp_dir("scan-cache-rename").join("cache.sqlite3");
+        let original = std::env::temp_dir().join("dedupeforge-rename-original.bin");
+        let renamed = std::env::temp_dir().join("dedupeforge-rename-renamed.bin");
+        fs::write(&original, b"same-bytes").unwrap();
+
+        let cache = Cache::open(&cache_path).unwrap();
+        let identity = CacheFileIdentity {
+            device_id: "device-a".to_string(),
+            inode: "inode-b".to_string(),
+        };
+
+        cache
+            .store_hash(
+                &CacheHashKey {
+                    path: &original,
+                    identity: Some(&identity),
+                    size: 10,
+                    modified_unix: Some(100),
+                    algorithm: "blake3",
+                    scope: HashScope::Full,
+                },
+                "identity-full",
+            )
+            .unwrap();
+
+        let renamed_entry = FileEntry {
+            path: renamed,
+            size: 10,
+            modified_unix: Some(100),
+            identity: Some(FileIdentity {
+                device_id: "device-a".to_string(),
+                inode: "inode-b".to_string(),
+            }),
+            is_protected: false,
+        };
+
+        let mut stats = HashRunStats::default();
+        let hashed = hash_files(
+            Some(&cache),
+            vec![renamed_entry.clone(), renamed_entry],
+            HashRunOptions {
+                algorithm: HashAlgorithm::Blake3,
+                partial_bytes: 0,
+                partial: false,
+                modified_time_tolerance_secs: 0,
+            },
+            &mut stats,
+        );
+
+        assert!(stats.errors.is_empty());
+        assert_eq!(stats.cache_hits, 2);
+        assert_eq!(hashed.len(), 1);
+
+        drop(cache);
+        let _ = fs::remove_file(original);
+        let _ = fs::remove_dir_all(cache_path.parent().unwrap());
+    }
 
     #[test]
-        fn multiple_distinct_groups_all_reported() {
-                    let dir = tempdir().unwrap();
-                    write(dir.path(), "a1.txt", b"group one content");
-                    write(dir.path(), "a2.txt", b"group one content");
-                    write(dir.path(), "b1.txt", b"group two different");
-                    write(dir.path(), "b2.txt", b"group two different");
-                    let report = scan_exact(&base_config(vec![dir.path().to_path_buf()], vec![])).unwrap();
-                    assert_eq!(report.duplicate_groups.len(), 2);
-        }
+    fn exact_scan_can_report_duplicate_zip_members() {
+        let root = temp_dir("archive-scan");
+        let left_zip = root.join("left.zip");
+        let right_zip = root.join("right.zip");
 
-    #[test]
-        fn groups_sorted_by_size_descending() {
-                    let dir = tempdir().unwrap();
-                    write(dir.path(), "big_a.txt",   b"bigger file content here!!");
-                    write(dir.path(), "big_b.txt",   b"bigger file content here!!");
-                    write(dir.path(), "small_a.txt", b"tiny");
-                    write(dir.path(), "small_b.txt", b"tiny");
-                    let report = scan_exact(&base_config(vec![dir.path().to_path_buf()], vec![])).unwrap();
-                    assert_eq!(report.duplicate_groups.len(), 2);
-                    assert!(report.duplicate_groups[0].size >= report.duplicate_groups[1].size);
-        }
+        write_zip(&left_zip, "a.txt", b"same-bytes");
+        write_zip(&right_zip, "b.txt", b"same-bytes");
+
+        let config = ScanConfig {
+            mode: ScanMode::Exact,
+            paths: vec![root.clone()],
+            protected_roots: Vec::new(),
+            algorithm: HashAlgorithm::Blake3,
+            partial_bytes: 4,
+            min_size: 1,
+            ignore_hidden: true,
+            byte_verify: false,
+            cache: CacheConfig {
+                enabled: false,
+                path: None,
+                modified_time_tolerance_secs: 0,
+            },
+            name_similarity_threshold: 85,
+            folder_similarity_threshold: 85,
+            image_hash_size: 8,
+            image_hamming_threshold: 12,
+            image_rotation_invariant: false,
+            media_duration_tolerance_secs: 2.0,
+            media_fingerprint_distance_threshold: 32,
+            scan_archives: true,
+            ignore_patterns: Vec::new(),
+        };
+
+        let report = scan_exact(&config).unwrap();
+        assert!(report
+            .duplicate_groups
+            .iter()
+            .any(|group| group.algorithm.contains("archive")));
+        assert!(report
+            .duplicate_groups
+            .iter()
+            .flat_map(|group| group.items.iter())
+            .any(|item| item.is_protected));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn write_zip(path: &Path, member_name: &str, bytes: &[u8]) {
+        let file = fs::File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file(member_name, options).unwrap();
+        zip.write_all(bytes).unwrap();
+        zip.finish().unwrap();
+    }
 }

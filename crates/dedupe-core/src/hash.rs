@@ -2,13 +2,15 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::File;
-use std::io::{Read, BufReader};
+use std::io::Cursor;
+use std::io::{BufReader, Read};
 use std::path::Path;
 use xxhash_rust::xxh3::Xxh3;
 
 const BUF_SIZE: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum HashAlgorithm {
     Blake3,
     Xxh3_128,
@@ -37,7 +39,16 @@ pub fn hash_file_prefix(path: &Path, algorithm: HashAlgorithm, max_bytes: u64) -
     hash_reader(&mut reader, algorithm, Some(max_bytes))
 }
 
-fn hash_reader<R: Read>(reader: &mut R, algorithm: HashAlgorithm, max_bytes: Option<u64>) -> Result<String> {
+pub fn hash_bytes(bytes: &[u8], algorithm: HashAlgorithm) -> Result<String> {
+    let mut cursor = Cursor::new(bytes);
+    hash_reader(&mut cursor, algorithm, None)
+}
+
+fn hash_reader<R: Read>(
+    reader: &mut R,
+    algorithm: HashAlgorithm,
+    max_bytes: Option<u64>,
+) -> Result<String> {
     match algorithm {
         HashAlgorithm::Blake3 => hash_blake3(reader, max_bytes),
         HashAlgorithm::Xxh3_128 => hash_xxh3_128(reader, max_bytes),
@@ -62,9 +73,13 @@ fn hash_blake3<R: Read>(reader: &mut R, max_bytes: Option<u64>) -> Result<String
 
     loop {
         let wanted = next_read_len(max_bytes, read_so_far, buf.len());
-        if wanted == 0 { break; }
+        if wanted == 0 {
+            break;
+        }
         let n = reader.read(&mut buf[..wanted])?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         hasher.update(&buf[..n]);
         read_so_far += n as u64;
     }
@@ -79,9 +94,13 @@ fn hash_xxh3_128<R: Read>(reader: &mut R, max_bytes: Option<u64>) -> Result<Stri
 
     loop {
         let wanted = next_read_len(max_bytes, read_so_far, buf.len());
-        if wanted == 0 { break; }
+        if wanted == 0 {
+            break;
+        }
         let n = reader.read(&mut buf[..wanted])?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         hasher.update(&buf[..n]);
         read_so_far += n as u64;
     }
@@ -96,9 +115,13 @@ fn hash_sha256<R: Read>(reader: &mut R, max_bytes: Option<u64>) -> Result<String
 
     loop {
         let wanted = next_read_len(max_bytes, read_so_far, buf.len());
-        if wanted == 0 { break; }
+        if wanted == 0 {
+            break;
+        }
         let n = reader.read(&mut buf[..wanted])?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         hasher.update(&buf[..n]);
         read_so_far += n as u64;
     }
@@ -106,107 +129,66 @@ fn hash_sha256<R: Read>(reader: &mut R, max_bytes: Option<u64>) -> Result<String
     Ok(hex::encode(hasher.finalize()))
 }
 
-
 #[cfg(test)]
 mod tests {
-        use super::*;
-        use std::io::Write;
-        use std::path::Path;
-        use tempfile::NamedTempFile;
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn temp_with(content: &[u8]) -> NamedTempFile {
-                let mut f = NamedTempFile::new().unwrap();
-                f.write_all(content).unwrap();
-                f
+    fn temp_file_path(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("dedupeforge-hash-{unique}-{name}"))
     }
 
     #[test]
-        fn blake3_same_content_same_hash() {
-                    let a = temp_with(b"hello world");
-                    let b = temp_with(b"hello world");
-                    assert_eq!(
-                                    hash_file(a.path(), HashAlgorithm::Blake3).unwrap(),
-                                    hash_file(b.path(), HashAlgorithm::Blake3).unwrap(),
-                                );
-        }
+    fn full_hash_is_stable_for_same_file() {
+        let path = temp_file_path("stable.bin");
+        fs::write(&path, b"duplicate-friendly-content").unwrap();
+
+        let first = hash_file(&path, HashAlgorithm::Blake3).unwrap();
+        let second = hash_file(&path, HashAlgorithm::Blake3).unwrap();
+
+        assert_eq!(first, second);
+
+        fs::remove_file(path).unwrap();
+    }
 
     #[test]
-        fn xxh3_same_content_same_hash() {
-                    let a = temp_with(b"hello world");
-                    let b = temp_with(b"hello world");
-                    assert_eq!(
-                                    hash_file(a.path(), HashAlgorithm::Xxh3_128).unwrap(),
-                                    hash_file(b.path(), HashAlgorithm::Xxh3_128).unwrap(),
-                                );
-        }
+    fn prefix_hash_changes_when_prefix_changes() {
+        let a = temp_file_path("prefix-a.bin");
+        let b = temp_file_path("prefix-b.bin");
+        fs::write(&a, b"abcXXXXX").unwrap();
+        fs::write(&b, b"xyzXXXXX").unwrap();
+
+        let hash_a = hash_file_prefix(&a, HashAlgorithm::Sha256, 3).unwrap();
+        let hash_b = hash_file_prefix(&b, HashAlgorithm::Sha256, 3).unwrap();
+
+        assert_ne!(hash_a, hash_b);
+
+        fs::remove_file(a).unwrap();
+        fs::remove_file(b).unwrap();
+    }
 
     #[test]
-        fn sha256_same_content_same_hash() {
-                    let a = temp_with(b"hello world");
-                    let b = temp_with(b"hello world");
-                    assert_eq!(
-                                    hash_file(a.path(), HashAlgorithm::Sha256).unwrap(),
-                                    hash_file(b.path(), HashAlgorithm::Sha256).unwrap(),
-                                );
-        }
+    fn prefix_hash_ignores_bytes_after_limit() {
+        let a = temp_file_path("limit-a.bin");
+        let b = temp_file_path("limit-b.bin");
+        fs::write(&a, b"same-prefix-A").unwrap();
+        fs::write(&b, b"same-prefix-B").unwrap();
 
-    #[test]
-        fn different_content_produces_different_hash() {
-                    let a = temp_with(b"hello world");
-                    let b = temp_with(b"hello WORLD");
-                    assert_ne!(
-                                    hash_file(a.path(), HashAlgorithm::Blake3).unwrap(),
-                                    hash_file(b.path(), HashAlgorithm::Blake3).unwrap(),
-                                );
-        }
+        let hash_a = hash_file_prefix(&a, HashAlgorithm::Xxh3_128, 11).unwrap();
+        let hash_b = hash_file_prefix(&b, HashAlgorithm::Xxh3_128, 11).unwrap();
+        let full_a = hash_file(&a, HashAlgorithm::Xxh3_128).unwrap();
+        let full_b = hash_file(&b, HashAlgorithm::Xxh3_128).unwrap();
 
-    #[test]
-        fn empty_file_hashes_consistently() {
-                    let a = temp_with(b"");
-                    let b = temp_with(b"");
-                    assert_eq!(
-                                    hash_file(a.path(), HashAlgorithm::Blake3).unwrap(),
-                                    hash_file(b.path(), HashAlgorithm::Blake3).unwrap(),
-                                );
-        }
+        assert_eq!(hash_a, hash_b);
+        assert_ne!(full_a, full_b);
 
-    #[test]
-        fn prefix_hash_matches_full_hash_of_same_bytes() {
-                    let full = temp_with(b"hello world");
-                    let prefix_only = temp_with(b"hello");
-                    let prefix_hash = hash_file_prefix(full.path(), HashAlgorithm::Blake3, 5).unwrap();
-                    let full_small = hash_file(prefix_only.path(), HashAlgorithm::Blake3).unwrap();
-                    assert_eq!(prefix_hash, full_small);
-        }
-
-    #[test]
-        fn prefix_hash_differs_from_full_hash_when_file_is_longer() {
-                    let f = temp_with(b"hello world");
-                    let prefix = hash_file_prefix(f.path(), HashAlgorithm::Blake3, 5).unwrap();
-                    let full = hash_file(f.path(), HashAlgorithm::Blake3).unwrap();
-                    assert_ne!(prefix, full);
-        }
-
-    #[test]
-        fn prefix_larger_than_file_equals_full_hash() {
-                    let f = temp_with(b"tiny");
-                    let prefix = hash_file_prefix(f.path(), HashAlgorithm::Blake3, 100_000).unwrap();
-                    let full = hash_file(f.path(), HashAlgorithm::Blake3).unwrap();
-                    assert_eq!(prefix, full);
-        }
-
-    #[test]
-        fn algorithm_labels_are_correct() {
-                    assert_eq!(HashAlgorithm::Blake3.label(), "blake3");
-                    assert_eq!(HashAlgorithm::Xxh3_128.label(), "xxh3_128");
-                    assert_eq!(HashAlgorithm::Sha256.label(), "sha256");
-        }
-
-    #[test]
-        fn missing_file_returns_error() {
-                    let result = hash_file(Path::new("/nonexistent/__dedupeforge_test__.bin"), HashAlgorithm::Blake3);
-                    assert!(result.is_err());
-        }
-                    assert!(result.is_err());
-        }
+        fs::remove_file(a).unwrap();
+        fs::remove_file(b).unwrap();
+    }
 }

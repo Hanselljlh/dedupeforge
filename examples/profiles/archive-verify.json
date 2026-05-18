@@ -1,0 +1,10 @@
+{
+  "preset": "network-conservative",
+  "cache": true,
+  "cache_mtime_tolerance_secs": 0,
+  "output": "json",
+  "partial_bytes": 1048576,
+  "min_size": 1,
+  "ignore_hidden": true,
+  "byte_verify": true
+}

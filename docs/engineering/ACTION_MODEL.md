@@ -1,6 +1,6 @@
 # Action model
 
-Status: planned.
+Status: implemented in first safe-action form.
 
 Actions must be separate from scanning.
 
@@ -31,7 +31,7 @@ Action log + undo manifest
 - export report
 - save action plan
 
-### Phase 2 actions
+### Current implemented actions
 
 - move selected files to quarantine
 - restore from quarantine
@@ -71,7 +71,7 @@ Before execution, validate:
 
 ## Manifest format
 
-Future `manifest.json` example:
+Current `manifest.json` shape:
 
 ```json
 {
@@ -92,3 +92,9 @@ Future `manifest.json` example:
   ]
 }
 ```
+
+## Action log
+
+Each quarantine batch also writes a plain-text `action.log` next to `manifest.json`.
+
+This log is intended to provide a quick human-auditable trail without requiring JSON parsing.

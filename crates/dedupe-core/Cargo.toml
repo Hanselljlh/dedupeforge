@@ -7,12 +7,15 @@ version.workspace = true
 [dependencies]
 anyhow.workspace = true
 blake3.workspace = true
+dedupe-cache = { path = "../dedupe-cache" }
+dedupe-media = { path = "../dedupe-media" }
 hex.workspace = true
 rayon.workspace = true
 serde.workspace = true
 sha2.workspace = true
 walkdir.workspace = true
 xxhash-rust.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
-tempfile = "3"
+image.workspace = true
