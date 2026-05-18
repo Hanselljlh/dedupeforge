@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use dedupe_core::{DuplicateGroup, DuplicateItem, ScanMode, ScanReport};
+use dedupe_core::{hash::hash_file, DuplicateGroup, DuplicateItem, HashAlgorithm, ScanMode, ScanReport};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -152,7 +152,7 @@ pub fn execute_quarantine_plan(
     plan: &ActionPlan,
     quarantine_root: &Path,
 ) -> Result<ActionManifest> {
-    ensure_plan_valid(plan)?;
+    ensure_plan_safe_to_execute(plan)?;
     fs::create_dir_all(quarantine_root).with_context(|| {
         format!(
             "failed to create quarantine root {}",
@@ -543,6 +543,73 @@ pub fn ensure_plan_valid(plan: &ActionPlan) -> Result<()> {
     Ok(())
 }
 
+fn ensure_plan_safe_to_execute(plan: &ActionPlan) -> Result<()> {
+    ensure_plan_valid(plan)?;
+
+    let validation = validate_plan_execution_hashes(&plan.items);
+    if !validation.valid {
+        let detail = validation.errors.join("; ");
+        bail!("action plan execution revalidation failed: {detail}");
+    }
+
+    Ok(())
+}
+
+fn validate_plan_execution_hashes(items: &[ActionItem]) -> ActionValidation {
+    let mut errors = Vec::new();
+
+    for item in items {
+        match verify_file_hash_matches(item, &item.path, "planned item") {
+            Ok(()) => {}
+            Err(err) => errors.push(err),
+        }
+
+        if matches!(item.action.as_str(), "hardlink_replace" | "symlink_replace") {
+            match item.replacement_target.as_ref() {
+                Some(target) => match verify_file_hash_matches(item, target, "replacement target") {
+                    Ok(()) => {}
+                    Err(err) => errors.push(err),
+                },
+                None => errors.push(format!(
+                    "replacement target is missing for {}",
+                    item.path.display()
+                )),
+            }
+        }
+    }
+
+    ActionValidation {
+        valid: errors.is_empty(),
+        errors,
+    }
+}
+
+fn verify_file_hash_matches(item: &ActionItem, path: &Path, role: &str) -> std::result::Result<(), String> {
+    let algorithm = parse_hash_algorithm(&item.algorithm)
+        .ok_or_else(|| format!("unsupported hash algorithm in action plan for {}: {}", path.display(), item.algorithm))?;
+    let actual_hash = hash_file(path, algorithm)
+        .map_err(|err| format!("failed to hash {role} {}: {err}", path.display()))?;
+
+    if actual_hash != item.hash {
+        return Err(format!(
+            "{role} {} no longer matches planned hash {}",
+            path.display(),
+            item.hash
+        ));
+    }
+
+    Ok(())
+}
+
+fn parse_hash_algorithm(label: &str) -> Option<HashAlgorithm> {
+    match label {
+        "blake3" => Some(HashAlgorithm::Blake3),
+        "xxh3_128" => Some(HashAlgorithm::Xxh3_128),
+        "sha256" => Some(HashAlgorithm::Sha256),
+        _ => None,
+    }
+}
+
 fn execute_action_item(item: &ActionItem, destination: &Path) -> Result<()> {
     match item.action.as_str() {
         "quarantine_move" => move_to_quarantine(item, destination),
@@ -772,7 +839,7 @@ fn unix_now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dedupe_core::{DuplicateGroup, DuplicateItem, MatchRisk, ScanMode, ScanReport};
+    use dedupe_core::{hash::hash_bytes, DuplicateGroup, DuplicateItem, MatchRisk, ScanMode, ScanReport};
     use std::path::PathBuf;
 
     fn sample_report() -> ScanReport {
@@ -785,7 +852,7 @@ mod tests {
             duplicate_groups: vec![DuplicateGroup {
                 size: 4,
                 algorithm: "blake3".to_string(),
-                hash: "abcd".to_string(),
+                hash: hash_bytes(b"same", HashAlgorithm::Blake3).unwrap(),
                 reason: "same size + same full hash".to_string(),
                 items: vec![
                     DuplicateItem {
@@ -913,7 +980,7 @@ mod tests {
             duplicate_groups: vec![DuplicateGroup {
                 size: 4,
                 algorithm: "blake3".to_string(),
-                hash: "abcd".to_string(),
+                hash: hash_bytes(b"same", HashAlgorithm::Blake3).unwrap(),
                 reason: "same size + same full hash".to_string(),
                 items: vec![
                     DuplicateItem {
@@ -1076,6 +1143,62 @@ mod tests {
 
         let err = execute_quarantine_plan(&plan, &quarantine_root).unwrap_err();
         assert!(err.to_string().contains("action plan validation failed"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn execute_quarantine_plan_rejects_same_size_content_drift() {
+        let root =
+            std::env::temp_dir().join(format!("dedupe-actions-exec-hash-drift-{}", unix_now()));
+        let quarantine_root = root.join(".quarantine");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("keep.txt"), b"same").unwrap();
+        fs::write(root.join("copy.txt"), b"same").unwrap();
+
+        let mut report = sample_report();
+        report.duplicate_groups[0].items[0].path = root.join("keep.txt");
+        report.duplicate_groups[0].items[1].path = root.join("copy.txt");
+
+        let plan = build_dry_run_quarantine_plan(&report, SelectionRule::KeepSuggested).unwrap();
+        fs::write(root.join("copy.txt"), b"size").unwrap();
+
+        let err = execute_quarantine_plan(&plan, &quarantine_root).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("action plan execution revalidation failed"));
+        assert!(err.to_string().contains("planned hash"));
+        assert!(root.join("copy.txt").exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn hardlink_replacement_rejects_same_size_target_content_drift() {
+        let root = std::env::temp_dir().join(format!("dedupe-actions-target-drift-{}", unix_now()));
+        let quarantine_root = root.join(".quarantine");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("keep.txt"), b"same").unwrap();
+        fs::write(root.join("copy.txt"), b"same").unwrap();
+
+        let mut report = sample_report();
+        report.duplicate_groups[0].items[0].path = root.join("keep.txt");
+        report.duplicate_groups[0].items[1].path = root.join("copy.txt");
+
+        let plan = build_dry_run_plan(
+            &report,
+            SelectionRule::KeepSuggested,
+            ActionKind::HardlinkReplace,
+        )
+        .unwrap();
+        fs::write(root.join("keep.txt"), b"size").unwrap();
+
+        let err = execute_quarantine_plan(&plan, &quarantine_root).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("action plan execution revalidation failed"));
+        assert!(err.to_string().contains("replacement target"));
+        assert!(root.join("copy.txt").exists());
 
         let _ = fs::remove_dir_all(root);
     }
