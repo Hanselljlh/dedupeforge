@@ -488,6 +488,23 @@ impl eframe::App for DedupeForgeApp {
                     if ui.button("Clear").clicked() {
                         self.results_filter_text.clear();
                     }
+                    if !filtered_group_indices.is_empty()
+                        && filtered_group_indices.len() < view.groups.len()
+                        && ui.button("Remove Filtered Groups").clicked()
+                    {
+                        match self
+                            .controller
+                            .remove_groups_from_review(&filtered_group_indices)
+                        {
+                            Ok(_) => {
+                                self.error_message.clear();
+                                self.results_filter_text.clear();
+                                self.selected_group_index = 0;
+                                self.selected_item_index = 0;
+                            }
+                            Err(err) => self.error_message = err.to_string(),
+                        }
+                    }
                 });
                 ui.horizontal_wrapped(|ui| {
                     ui.label(format!("Mode: {}", scan_mode_label(view.mode)));
@@ -502,6 +519,8 @@ impl eframe::App for DedupeForgeApp {
                             filtered_group_indices.len(),
                             view.groups.len()
                         ));
+                        ui.separator();
+                        ui.label("Tip: remove filtered groups to prune the review set");
                     }
                     if matches!(
                         view.mode,
