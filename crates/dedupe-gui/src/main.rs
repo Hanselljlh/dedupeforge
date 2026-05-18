@@ -1,6 +1,6 @@
 use dedupe_actions::{ActionKind, SelectionRule};
 use dedupe_core::{HashAlgorithm, ScanMode};
-use dedupe_gui::{GroupViewModel, GuiController, PreviewData};
+use dedupe_gui::{GroupViewModel, GuiController, PreviewData, ResultsViewModel};
 use eframe::egui;
 use eframe::egui::{ColorImage, TextureHandle, TextureOptions};
 use std::path::{Path, PathBuf};
@@ -31,6 +31,7 @@ struct DedupeForgeApp {
     session_path_text: String,
     report_path_text: String,
     manifest_path_text: String,
+    results_filter_text: String,
     selection_rule: SelectionRule,
     action_kind: ActionKind,
     selected_group_index: usize,
@@ -53,6 +54,7 @@ impl Default for DedupeForgeApp {
             session_path_text: "dedupeforge-gui-session.json".to_string(),
             report_path_text: "dedupeforge-report.json".to_string(),
             manifest_path_text: String::new(),
+            results_filter_text: String::new(),
             selection_rule: SelectionRule::KeepSuggested,
             action_kind: ActionKind::QuarantineMove,
             selected_group_index: 0,
@@ -475,12 +477,32 @@ impl eframe::App for DedupeForgeApp {
 
             ui.heading("Results");
             if let Some(view) = view {
+                let filtered_group_indices =
+                    filtered_group_indices(&view, self.results_filter_text.as_str());
+                ui.horizontal(|ui| {
+                    ui.label("Filter");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.results_filter_text)
+                            .hint_text("Match group reason or file path"),
+                    );
+                    if ui.button("Clear").clicked() {
+                        self.results_filter_text.clear();
+                    }
+                });
                 ui.horizontal_wrapped(|ui| {
                     ui.label(format!("Mode: {}", scan_mode_label(view.mode)));
                     ui.separator();
                     ui.label(format!("Risk: {}", view.risk_label));
                     ui.separator();
-                    ui.label(view.summary_line);
+                    ui.label(view.summary_line.as_str());
+                    if filtered_group_indices.len() != view.groups.len() {
+                        ui.separator();
+                        ui.label(format!(
+                            "Showing {} of {} groups",
+                            filtered_group_indices.len(),
+                            view.groups.len()
+                        ));
+                    }
                     if matches!(
                         view.mode,
                         ScanMode::SimilarImages | ScanMode::SimilarVideos | ScanMode::SimilarAudio
@@ -493,13 +515,20 @@ impl eframe::App for DedupeForgeApp {
                     }
                 });
                 ui.add_space(10.0);
+                if !filtered_group_indices.contains(&self.selected_group_index) {
+                    if let Some(first_index) = filtered_group_indices.first() {
+                        self.selected_group_index = *first_index;
+                        self.selected_item_index = 0;
+                    }
+                }
 
                 ui.columns(2, |columns| {
                     columns[0].heading("Groups");
                     columns[0].separator();
                     egui::ScrollArea::vertical().show(&mut columns[0], |ui| {
-                        for (index, group) in view.groups.iter().enumerate() {
-                            let selected = self.selected_group_index == index;
+                        for &group_index in &filtered_group_indices {
+                            let group = &view.groups[group_index];
+                            let selected = self.selected_group_index == group_index;
                             let label = format!(
                                 "{}. {} items | {}",
                                 group.index,
@@ -507,7 +536,8 @@ impl eframe::App for DedupeForgeApp {
                                 truncate_text(&group.reason, 58)
                             );
                             if ui.selectable_label(selected, label).clicked() {
-                                self.selected_group_index = index;
+                                self.selected_group_index = group_index;
+                                self.selected_item_index = 0;
                             }
                         }
                     });
@@ -515,7 +545,7 @@ impl eframe::App for DedupeForgeApp {
                     columns[1].heading("Group Details");
                     columns[1].separator();
                     if let Some(group) = view.groups.get(self.selected_group_index) {
-                        render_group_details(
+                        if render_group_details(
                             &mut columns[1],
                             ctx,
                             group,
@@ -523,9 +553,18 @@ impl eframe::App for DedupeForgeApp {
                             &self.controller,
                             &mut self.preview_texture_path,
                             &mut self.preview_texture,
-                        );
+                        ) {
+                            if let Err(err) = self.controller.set_keep_override(
+                                self.selected_group_index,
+                                self.selected_item_index,
+                            ) {
+                                self.error_message = err.to_string();
+                            } else {
+                                self.error_message.clear();
+                            }
+                        }
                     } else {
-                        columns[1].label("Run a scan to populate grouped results.");
+                        columns[1].label("Run a scan to populate results.");
                     }
                 });
 
@@ -585,7 +624,7 @@ fn render_group_details(
     controller: &GuiController,
     preview_texture_path: &mut Option<PathBuf>,
     preview_texture: &mut Option<TextureHandle>,
-) {
+) -> bool {
     ui.label(format!("Reason: {}", group.reason));
     ui.label(format!("Engine: {}", group.algorithm_or_engine));
     ui.label(format!("Representative size: {} bytes", group.size));
@@ -629,6 +668,13 @@ fn render_group_details(
                 });
         });
 
+    let mut keeper_override_requested = false;
+    if group.items.get(*selected_item_index).is_some() {
+        if ui.button("Make Selected Keeper").clicked() {
+            keeper_override_requested = true;
+        }
+    }
+
     ui.separator();
     ui.heading("Preview");
     if let Some(item) = group.items.get(*selected_item_index) {
@@ -637,6 +683,7 @@ fn render_group_details(
     } else {
         ui.label("Select a file in this group to preview it.");
     }
+    keeper_override_requested
 }
 
 fn render_preview_panel(
@@ -806,4 +853,27 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
     } else {
         truncated
     }
+}
+
+fn filtered_group_indices(view: &ResultsViewModel, filter_text: &str) -> Vec<usize> {
+    let needle = filter_text.trim().to_ascii_lowercase();
+    if needle.is_empty() {
+        return (0..view.groups.len()).collect();
+    }
+
+    view.groups
+        .iter()
+        .enumerate()
+        .filter_map(|(index, group)| {
+            let reason_matches = group.reason.to_ascii_lowercase().contains(&needle);
+            let path_matches = group.items.iter().any(|item| {
+                item.path
+                    .display()
+                    .to_string()
+                    .to_ascii_lowercase()
+                    .contains(&needle)
+            });
+            (reason_matches || path_matches).then_some(index)
+        })
+        .collect()
 }
