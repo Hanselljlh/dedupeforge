@@ -308,7 +308,11 @@ where
                 ScanProgressPhase::ByteVerifying,
                 group_index + 1,
                 full_group_count,
-                format!("Byte verifying group {} of {}", group_index + 1, full_group_count),
+                format!(
+                    "Byte verifying group {} of {}",
+                    group_index + 1,
+                    full_group_count
+                ),
             ));
             for verified in split_by_byte_equality(&group, &mut stats.errors) {
                 if verified.len() > 1 {
@@ -396,6 +400,34 @@ struct HashRunStats {
 
 type HashOutcome = (FileEntry, Result<(String, bool), String>);
 
+struct PendingHash {
+    file: FileEntry,
+    cache_key: CacheHashKeyOwned,
+}
+
+#[derive(Clone)]
+struct CacheHashKeyOwned {
+    path: PathBuf,
+    identity: Option<CacheFileIdentity>,
+    size: u64,
+    modified_unix: Option<i64>,
+    algorithm: &'static str,
+    scope: HashScope,
+}
+
+impl CacheHashKeyOwned {
+    fn as_borrowed(&self) -> CacheHashKey<'_> {
+        CacheHashKey {
+            path: &self.path,
+            identity: self.identity.as_ref(),
+            size: self.size,
+            modified_unix: self.modified_unix,
+            algorithm: self.algorithm,
+            scope: self.scope,
+        }
+    }
+}
+
 fn hash_files(
     cache: Option<&Cache>,
     files: Vec<FileEntry>,
@@ -406,23 +438,67 @@ fn hash_files(
 ) -> HashMap<(u64, String), Vec<FileEntry>> {
     let total = files.len();
     let hashed: Vec<HashOutcome> = if let Some(cache) = cache {
-        files
-            .into_iter()
-            .map(|file| {
-                let hash_result = hash_with_cache(
-                    Some(cache),
-                    &file,
+        let mut completed = Vec::with_capacity(total);
+        let mut pending = Vec::new();
+
+        for file in files {
+            let cache_key = cache_hash_key(
+                &file,
+                options.algorithm,
+                options.partial_bytes,
+                options.partial,
+            );
+            match cache
+                .lookup_hash(
+                    &cache_key.as_borrowed(),
+                    CacheLookupPolicy {
+                        modified_time_tolerance_secs: options.modified_time_tolerance_secs,
+                    },
+                )
+                .and_then(|found| {
+                    if found.is_some() {
+                        cache.mark_seen(&file.path)?;
+                    }
+                    Ok(found)
+                }) {
+                Ok(Some(found)) => completed.push((file, Ok((found.hash, true)))),
+                Ok(None) => pending.push(PendingHash { file, cache_key }),
+                Err(e) => completed.push((file, Err(e.to_string()))),
+            }
+        }
+
+        let mut hashed_misses: Vec<(PendingHash, Result<String, String>)> = pending
+            .into_par_iter()
+            .map(|pending| {
+                let hash_result = hash_without_cache(
+                    &pending.file,
                     options.algorithm,
                     options.partial_bytes,
                     options.partial,
-                    options.modified_time_tolerance_secs,
-                );
-                match hash_result {
-                    Ok((hash, used_cache)) => (file, Ok((hash, used_cache))),
-                    Err(e) => (file, Err(e.to_string())),
-                }
+                )
+                .map(|(hash, _)| hash)
+                .map_err(|e| e.to_string());
+                (pending, hash_result)
             })
-            .collect()
+            .collect();
+
+        for (pending, result) in hashed_misses.drain(..) {
+            match result {
+                Ok(hash) => {
+                    if let Err(e) = cache.store_hash(&pending.cache_key.as_borrowed(), &hash) {
+                        completed.push((
+                            pending.file,
+                            Err(format!("failed to store cache entry: {e}")),
+                        ));
+                    } else {
+                        completed.push((pending.file, Ok((hash, false))));
+                    }
+                }
+                Err(error) => completed.push((pending.file, Err(error))),
+            }
+        }
+
+        completed
     } else {
         files
             .into_par_iter()
@@ -515,14 +591,12 @@ fn hash_without_cache(
     Ok((hash, false))
 }
 
-fn hash_with_cache(
-    cache: Option<&Cache>,
+fn cache_hash_key(
     file: &FileEntry,
     algorithm: HashAlgorithm,
     partial_bytes: u64,
     partial: bool,
-    modified_time_tolerance_secs: i64,
-) -> Result<(String, bool)> {
+) -> CacheHashKeyOwned {
     let scope = if partial {
         HashScope::Partial {
             bytes_hashed: partial_bytes,
@@ -530,50 +604,15 @@ fn hash_with_cache(
     } else {
         HashScope::Full
     };
-    let label = algorithm.label();
 
-    if let Some(cache) = cache {
-        let identity = cache_identity(file);
-        if let Some(found) = cache.lookup_hash(
-            &CacheHashKey {
-                path: &file.path,
-                identity: identity.as_ref(),
-                size: file.size,
-                modified_unix: file.modified_unix,
-                algorithm: label,
-                scope,
-            },
-            CacheLookupPolicy {
-                modified_time_tolerance_secs,
-            },
-        )? {
-            cache.mark_seen(&file.path)?;
-            return Ok((found.hash, true));
-        }
+    CacheHashKeyOwned {
+        path: file.path.clone(),
+        identity: cache_identity(file),
+        size: file.size,
+        modified_unix: file.modified_unix,
+        algorithm: algorithm.label(),
+        scope,
     }
-
-    let hash = if partial {
-        hash_file_prefix(&file.path, algorithm, partial_bytes)?
-    } else {
-        hash_file(&file.path, algorithm)?
-    };
-
-    if let Some(cache) = cache {
-        let identity = cache_identity(file);
-        cache.store_hash(
-            &CacheHashKey {
-                path: &file.path,
-                identity: identity.as_ref(),
-                size: file.size,
-                modified_unix: file.modified_unix,
-                algorithm: label,
-                scope,
-            },
-            &hash,
-        )?;
-    }
-
-    Ok((hash, false))
 }
 
 fn scan_zip_archives_exact(
