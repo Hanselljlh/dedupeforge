@@ -331,11 +331,9 @@ where
             ));
             Ok(report)
         }
-        ScanMode::DuplicateArchiveMembers => scan_exact_archive_members_with_progress(
-            config,
-            &cancel,
-            &mut on_progress,
-        ),
+        ScanMode::DuplicateArchiveMembers => {
+            scan_exact_archive_members_with_progress(config, &cancel, &mut on_progress)
+        }
         ScanMode::EmptyArchives => {
             ensure_not_cancelled(&cancel)?;
             on_progress(progress_event(
@@ -888,7 +886,8 @@ fn scan_zip_archives_exact(
 }
 
 fn count_zip_archives(roots: &[PathBuf]) -> usize {
-    roots.iter()
+    roots
+        .iter()
         .flat_map(|root| {
             walkdir::WalkDir::new(root)
                 .follow_links(false)
@@ -897,7 +896,8 @@ fn count_zip_archives(roots: &[PathBuf]) -> usize {
                 .filter(|entry| entry.file_type().is_file())
                 .filter(|entry| {
                     matches!(
-                        entry.path()
+                        entry
+                            .path()
                             .extension()
                             .and_then(|ext| ext.to_str())
                             .map(|ext| ext.to_ascii_lowercase())

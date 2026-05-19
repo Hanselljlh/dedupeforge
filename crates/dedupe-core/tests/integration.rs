@@ -195,7 +195,13 @@ fn large_file_mode_sorts_biggest_files_first() {
 
     let report = scan(&config).unwrap();
     assert_eq!(report.duplicate_groups.len(), 1);
-    assert_eq!(report.duplicate_groups[0].items[0].path.file_name().and_then(|s| s.to_str()), Some("large.bin"));
+    assert_eq!(
+        report.duplicate_groups[0].items[0]
+            .path
+            .file_name()
+            .and_then(|s| s.to_str()),
+        Some("large.bin")
+    );
 
     let _ = fs::remove_dir_all(dir);
 }
@@ -212,7 +218,9 @@ fn bad_extension_mode_flags_content_mismatches() {
     let report = scan(&config).unwrap();
     assert_eq!(report.duplicate_groups.len(), 1);
     assert_eq!(report.duplicate_groups[0].items.len(), 1);
-    assert!(report.duplicate_groups[0].items[0].path.ends_with("photo.txt"));
+    assert!(report.duplicate_groups[0].items[0]
+        .path
+        .ends_with("photo.txt"));
     assert_eq!(report.risk, MatchRisk::Medium);
 
     let _ = fs::remove_dir_all(dir);
@@ -264,7 +272,9 @@ fn empty_archive_mode_finds_archives_without_file_members() {
     let report = scan(&config).unwrap();
     assert_eq!(report.duplicate_groups.len(), 1);
     assert_eq!(report.duplicate_groups[0].items.len(), 1);
-    assert!(report.duplicate_groups[0].items[0].path.ends_with("empty.zip"));
+    assert!(report.duplicate_groups[0].items[0]
+        .path
+        .ends_with("empty.zip"));
 
     let _ = fs::remove_dir_all(dir);
 }

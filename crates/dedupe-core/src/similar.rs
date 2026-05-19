@@ -732,7 +732,8 @@ fn single_review_group(
 
     let mut ordered = items.to_vec();
     ordered.sort_by_key(item_sort_key);
-    let keep_index = choose_keep_index_for_indices(&ordered, &(0..ordered.len()).collect::<Vec<_>>());
+    let keep_index =
+        choose_keep_index_for_indices(&ordered, &(0..ordered.len()).collect::<Vec<_>>());
     let items = ordered
         .into_iter()
         .enumerate()
@@ -1143,7 +1144,9 @@ fn has_bad_extension(file: &FileEntry) -> bool {
     let Some(expected_extensions) = detected_extensions(&bytes) else {
         return false;
     };
-    !expected_extensions.iter().any(|expected| *expected == extension)
+    !expected_extensions
+        .iter()
+        .any(|expected| *expected == extension)
 }
 
 fn detected_extensions(bytes: &[u8]) -> Option<&'static [&'static str]> {
@@ -1199,7 +1202,8 @@ fn collect_zip_files(roots: &[PathBuf], ignore_hidden: bool) -> Vec<FileEntry> {
                 continue;
             }
             if !matches!(
-                entry.path()
+                entry
+                    .path()
                     .extension()
                     .and_then(|ext| ext.to_str())
                     .map(|ext| ext.to_ascii_lowercase())
@@ -1698,7 +1702,9 @@ mod tests {
         assert_eq!(report.mode, ScanMode::RawJpegPairs);
         assert_eq!(report.risk, MatchRisk::Medium);
         assert_eq!(report.duplicate_groups.len(), 1);
-        assert!(report.duplicate_groups[0].reason.contains("RAW + JPEG pair"));
+        assert!(report.duplicate_groups[0]
+            .reason
+            .contains("RAW + JPEG pair"));
 
         fs::remove_dir_all(root).unwrap();
     }

@@ -1,5 +1,7 @@
 use anyhow::{bail, Context, Result};
-use dedupe_core::{hash::hash_file, DuplicateGroup, DuplicateItem, HashAlgorithm, ScanMode, ScanReport};
+use dedupe_core::{
+    hash::hash_file, DuplicateGroup, DuplicateItem, HashAlgorithm, ScanMode, ScanReport,
+};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -566,10 +568,12 @@ fn validate_plan_execution_hashes(items: &[ActionItem]) -> ActionValidation {
 
         if matches!(item.action.as_str(), "hardlink_replace" | "symlink_replace") {
             match item.replacement_target.as_ref() {
-                Some(target) => match verify_file_hash_matches(item, target, "replacement target") {
-                    Ok(()) => {}
-                    Err(err) => errors.push(err),
-                },
+                Some(target) => {
+                    match verify_file_hash_matches(item, target, "replacement target") {
+                        Ok(()) => {}
+                        Err(err) => errors.push(err),
+                    }
+                }
                 None => errors.push(format!(
                     "replacement target is missing for {}",
                     item.path.display()
@@ -584,9 +588,18 @@ fn validate_plan_execution_hashes(items: &[ActionItem]) -> ActionValidation {
     }
 }
 
-fn verify_file_hash_matches(item: &ActionItem, path: &Path, role: &str) -> std::result::Result<(), String> {
-    let algorithm = parse_hash_algorithm(&item.algorithm)
-        .ok_or_else(|| format!("unsupported hash algorithm in action plan for {}: {}", path.display(), item.algorithm))?;
+fn verify_file_hash_matches(
+    item: &ActionItem,
+    path: &Path,
+    role: &str,
+) -> std::result::Result<(), String> {
+    let algorithm = parse_hash_algorithm(&item.algorithm).ok_or_else(|| {
+        format!(
+            "unsupported hash algorithm in action plan for {}: {}",
+            path.display(),
+            item.algorithm
+        )
+    })?;
     let actual_hash = hash_file(path, algorithm)
         .map_err(|err| format!("failed to hash {role} {}: {err}", path.display()))?;
 
@@ -839,7 +852,9 @@ fn unix_now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dedupe_core::{hash::hash_bytes, DuplicateGroup, DuplicateItem, MatchRisk, ScanMode, ScanReport};
+    use dedupe_core::{
+        hash::hash_bytes, DuplicateGroup, DuplicateItem, MatchRisk, ScanMode, ScanReport,
+    };
     use std::path::PathBuf;
 
     fn sample_report() -> ScanReport {
