@@ -364,6 +364,12 @@ Run tests on Windows:
 powershell -ExecutionPolicy Bypass -File .\scripts\test-windows.ps1
 ```
 
+Build Windows release binaries and package them into `dist\windows-x86_64-gnu`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build-windows-release.ps1
+```
+
 ## Safety behavior
 
 DedupeForge is designed around conservative cleanup.
