@@ -44,6 +44,8 @@ Implemented:
 - empty folder review mode
 - large-file review mode
 - bad-extension detection mode
+- duplicate archive-member review mode
+- empty-archive review mode
 - FFmpeg/ffprobe dependency detection for media scans
 - cache-backed video and audio fingerprints
 - ignored file patterns for non-content scans
@@ -224,6 +226,18 @@ Review files whose extension does not match detected content:
 cargo run --release --bin dedupeforge -- /data/library --mode bad-extensions
 ```
 
+Review duplicate file members across zip archives:
+
+```bash
+cargo run --release --bin dedupeforge -- /data/backups --mode duplicate-archive-members
+```
+
+Review empty zip archives:
+
+```bash
+cargo run --release --bin dedupeforge -- /data/backups --mode empty-archives
+```
+
 Run exact duplicate scanning inside zip archives too:
 
 ```bash
@@ -392,6 +406,8 @@ Current similarity behavior:
 - `--mode empty-folders` is low risk and reports empty directories for cleanup review
 - `--mode large-files` is low risk and reports files at or above the chosen size threshold
 - `--mode bad-extensions` is medium risk and flags files whose extension does not match detected content
+- `--mode duplicate-archive-members` is medium risk and reports duplicate file members across zip archives
+- `--mode empty-archives` is low risk and reports archives with no file members
 - thresholds are tunable with `--name-similarity-threshold` and `--folder-similarity-threshold`
 - image similarity is tunable with `--image-hash-size` and `--image-hamming-threshold`
 - image mode can use cache-backed perceptual hashes
@@ -414,6 +430,7 @@ Current GUI status:
 - the GUI now exposes `similar-videos` and `similar-audio` modes and shows the same warning for media similarity scans
 - the GUI now exposes explicit RAW + JPEG pair, empty-file, and empty-folder review modes
 - the GUI now exposes large-file and bad-extension hygiene review modes
+- the GUI now exposes duplicate-archive-member and empty-archive hygiene review modes
 
 ## Planned product modes
 

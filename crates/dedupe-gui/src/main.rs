@@ -384,6 +384,16 @@ impl eframe::App for DedupeForgeApp {
                             ScanMode::BadExtensions,
                             "Bad extensions",
                         );
+                        ui.selectable_value(
+                            &mut profile.mode,
+                            ScanMode::DuplicateArchiveMembers,
+                            "Duplicate archive members",
+                        );
+                        ui.selectable_value(
+                            &mut profile.mode,
+                            ScanMode::EmptyArchives,
+                            "Empty archives",
+                        );
                     });
 
                 ui.add_space(8.0);
@@ -931,10 +941,10 @@ fn render_group_details(
         });
 
     let mut keeper_override_requested = false;
-    if group.items.get(*selected_item_index).is_some() {
-        if ui.button("Make Selected Keeper").clicked() {
-            keeper_override_requested = true;
-        }
+    if group.items.get(*selected_item_index).is_some()
+        && ui.button("Make Selected Keeper").clicked()
+    {
+        keeper_override_requested = true;
     }
 
     ui.separator();
@@ -1048,6 +1058,8 @@ fn scan_mode_label(mode: ScanMode) -> &'static str {
         ScanMode::EmptyFolders => "empty-folders",
         ScanMode::LargeFiles => "large-files",
         ScanMode::BadExtensions => "bad-extensions",
+        ScanMode::DuplicateArchiveMembers => "duplicate-archive-members",
+        ScanMode::EmptyArchives => "empty-archives",
     }
 }
 

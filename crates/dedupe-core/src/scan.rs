@@ -1,8 +1,9 @@
 use crate::fs_walk::{collect_files, FileEntry, FileIdentity};
 use crate::hash::{hash_bytes, hash_file, hash_file_prefix, HashAlgorithm};
 use crate::similar::{
-    scan_bad_extensions, scan_duplicate_folders, scan_empty_files, scan_empty_folders,
-    scan_large_files, scan_raw_jpeg_pairs, scan_similar_images, scan_similar_names,
+    scan_bad_extensions, scan_duplicate_folders, scan_empty_archives, scan_empty_files,
+    scan_empty_folders, scan_large_files, scan_raw_jpeg_pairs, scan_similar_images,
+    scan_similar_names,
 };
 use crate::verify::files_equal;
 use anyhow::Result;
@@ -123,6 +124,8 @@ pub enum ScanMode {
     EmptyFolders,
     LargeFiles,
     BadExtensions,
+    DuplicateArchiveMembers,
+    EmptyArchives,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
@@ -328,7 +331,66 @@ where
             ));
             Ok(report)
         }
+        ScanMode::DuplicateArchiveMembers => {
+            scan_exact_archive_members_with_progress(config, &cancel, &mut on_progress)
+        }
+        ScanMode::EmptyArchives => {
+            ensure_not_cancelled(&cancel)?;
+            on_progress(progress_event(
+                ScanProgressPhase::CollectingFiles,
+                0,
+                0,
+                "Scanning empty archives".to_string(),
+            ));
+            let report = scan_empty_archives(config)?;
+            ensure_not_cancelled(&cancel)?;
+            on_progress(progress_event(
+                ScanProgressPhase::Finished,
+                report.scanned_files,
+                report.scanned_files,
+                format!("Scan complete: {} groups", report.duplicate_groups.len()),
+            ));
+            Ok(report)
+        }
     }
+}
+
+fn scan_exact_archive_members_with_progress<F>(
+    config: &ScanConfig,
+    cancel: &ScanCancelToken,
+    on_progress: &mut F,
+) -> Result<ScanReport>
+where
+    F: FnMut(ScanProgress),
+{
+    ensure_not_cancelled(cancel)?;
+    on_progress(progress_event(
+        ScanProgressPhase::ScanningArchives,
+        0,
+        config.paths.len(),
+        "Scanning zip archives".to_string(),
+    ));
+    let mut errors = Vec::new();
+    let duplicate_groups = scan_zip_archives_exact(config, &mut errors)?;
+    ensure_not_cancelled(cancel)?;
+    let scanned_archives = count_zip_archives(&config.paths);
+    let report = ScanReport {
+        mode: ScanMode::DuplicateArchiveMembers,
+        scanned_files: scanned_archives,
+        candidate_size_groups: duplicate_groups.len(),
+        cache_hits: 0,
+        cache_misses: 0,
+        duplicate_groups,
+        errors,
+        risk: MatchRisk::Medium,
+    };
+    on_progress(progress_event(
+        ScanProgressPhase::Finished,
+        scanned_archives,
+        scanned_archives,
+        format!("Scan complete: {} groups", report.duplicate_groups.len()),
+    ));
+    Ok(report)
 }
 
 pub fn scan_exact(config: &ScanConfig) -> Result<ScanReport> {
@@ -821,6 +883,30 @@ fn scan_zip_archives_exact(
     }
 
     Ok(groups)
+}
+
+fn count_zip_archives(roots: &[PathBuf]) -> usize {
+    roots
+        .iter()
+        .flat_map(|root| {
+            walkdir::WalkDir::new(root)
+                .follow_links(false)
+                .into_iter()
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry.file_type().is_file())
+                .filter(|entry| {
+                    matches!(
+                        entry
+                            .path()
+                            .extension()
+                            .and_then(|ext| ext.to_str())
+                            .map(|ext| ext.to_ascii_lowercase())
+                            .as_deref(),
+                        Some("zip")
+                    )
+                })
+        })
+        .count()
 }
 
 fn collect_zip_members(

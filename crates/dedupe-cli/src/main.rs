@@ -170,6 +170,8 @@ enum CliScanMode {
     EmptyFolders,
     LargeFiles,
     BadExtensions,
+    DuplicateArchiveMembers,
+    EmptyArchives,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, ValueEnum)]
@@ -531,6 +533,8 @@ impl From<CliScanMode> for ScanMode {
             CliScanMode::EmptyFolders => ScanMode::EmptyFolders,
             CliScanMode::LargeFiles => ScanMode::LargeFiles,
             CliScanMode::BadExtensions => ScanMode::BadExtensions,
+            CliScanMode::DuplicateArchiveMembers => ScanMode::DuplicateArchiveMembers,
+            CliScanMode::EmptyArchives => ScanMode::EmptyArchives,
         }
     }
 }
@@ -661,6 +665,8 @@ fn scan_mode_label(mode: ScanMode) -> &'static str {
         ScanMode::EmptyFolders => "empty-folders",
         ScanMode::LargeFiles => "large-files",
         ScanMode::BadExtensions => "bad-extensions",
+        ScanMode::DuplicateArchiveMembers => "duplicate-archive-members",
+        ScanMode::EmptyArchives => "empty-archives",
     }
 }
 

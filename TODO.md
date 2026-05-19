@@ -75,3 +75,8 @@ Current decision:
 
 - [x] Large-file review mode.
 - [x] Bad-extension detection mode.
+
+## Archive hygiene modes
+
+- [x] Duplicate archive-member review mode.
+- [x] Empty-archive review mode.
