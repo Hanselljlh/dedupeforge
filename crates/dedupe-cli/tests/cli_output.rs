@@ -234,6 +234,79 @@ fn similar_image_mode_can_reuse_cached_image_hashes() {
 }
 
 #[test]
+fn raw_jpeg_pair_mode_reports_medium_risk_matches() {
+    let root = std::env::temp_dir().join("dedupeforge-cli-raw-jpeg");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("IMG_1000.CR2"), b"raw").unwrap();
+    std::fs::write(root.join("IMG-1000.jpg"), b"jpeg").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_dedupeforge"))
+        .arg(root.as_os_str())
+        .arg("--mode")
+        .arg("raw-jpeg-pairs")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Mode: raw-jpeg-pairs"));
+    assert!(stdout.contains("Match risk: medium"));
+    assert!(stdout.contains("RAW + JPEG pair"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn empty_file_mode_reports_zero_byte_files() {
+    let root = std::env::temp_dir().join("dedupeforge-cli-empty-files");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.txt"), b"").unwrap();
+    std::fs::write(root.join("b.txt"), b"").unwrap();
+    std::fs::write(root.join("c.txt"), b"data").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_dedupeforge"))
+        .arg(root.as_os_str())
+        .arg("--mode")
+        .arg("empty-files")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Mode: empty-files"));
+    assert!(stdout.contains("Match risk: low"));
+    assert!(stdout.contains("empty files ready for review"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn empty_folder_mode_reports_empty_directories() {
+    let root = std::env::temp_dir().join("dedupeforge-cli-empty-folders");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("empty")).unwrap();
+    std::fs::create_dir_all(root.join("non-empty")).unwrap();
+    std::fs::write(root.join("non-empty").join("file.txt"), b"data").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_dedupeforge"))
+        .arg(root.as_os_str())
+        .arg("--mode")
+        .arg("empty-folders")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Mode: empty-folders"));
+    assert!(stdout.contains("Match risk: low"));
+    assert!(stdout.contains("empty folders ready for review"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn similar_video_mode_reports_missing_dependency_clearly() {
     let root = fixture_dir("exact-basic");
 

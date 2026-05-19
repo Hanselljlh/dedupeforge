@@ -169,3 +169,19 @@ Exit criteria:
 - advanced features are disabled by default
 - filesystem limitations are detected before action
 - every advanced action is logged
+
+## Phase 9: Utility review modes
+
+Goal: cover common library-hygiene and photo-workflow review tasks.
+
+Implemented:
+
+- explicit RAW + JPEG pair mode
+- empty file review mode
+- empty folder review mode
+
+Exit criteria:
+
+- utility modes reuse the shared scan/report pipeline
+- CLI and GUI expose the same new modes
+- low-risk utility modes are labeled clearly in results

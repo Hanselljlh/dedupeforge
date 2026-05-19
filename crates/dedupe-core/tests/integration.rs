@@ -1,5 +1,5 @@
 use dedupe_core::hash::HashAlgorithm;
-use dedupe_core::scan::{scan_exact, CacheConfig, ScanConfig, ScanMode};
+use dedupe_core::scan::{scan, scan_exact, CacheConfig, MatchRisk, ScanConfig, ScanMode};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -146,6 +146,39 @@ fn hidden_files_excluded_when_flag_set() {
     let report = scan_exact(&config).unwrap();
     assert_eq!(report.scanned_files, 1, "hidden files must not be counted");
     assert_eq!(report.duplicate_groups.len(), 0);
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn raw_jpeg_pair_mode_finds_camera_pair_workflows() {
+    let dir = temp_dir("raw-jpeg-pairs");
+    write(&dir, "IMG_1001.CR2", b"raw");
+    write(&dir, "IMG-1001.jpg", b"jpeg");
+
+    let mut config = base_config(vec![dir.clone()]);
+    config.mode = ScanMode::RawJpegPairs;
+
+    let report = scan(&config).unwrap();
+    assert_eq!(report.duplicate_groups.len(), 1);
+    assert_eq!(report.risk, MatchRisk::Medium);
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn empty_file_mode_finds_zero_byte_files() {
+    let dir = temp_dir("empty-files");
+    write(&dir, "a.txt", b"");
+    write(&dir, "b.txt", b"");
+    write(&dir, "c.txt", b"not empty");
+
+    let mut config = base_config(vec![dir.clone()]);
+    config.mode = ScanMode::EmptyFiles;
+
+    let report = scan(&config).unwrap();
+    assert_eq!(report.duplicate_groups.len(), 1);
+    assert_eq!(report.duplicate_groups[0].items.len(), 2);
 
     let _ = fs::remove_dir_all(dir);
 }

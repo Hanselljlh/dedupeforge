@@ -64,3 +64,9 @@ Current decision:
 - [x] NAS-conservative preset.
 - [x] Report database browser.
 - [x] Scheduler-friendly stored scan reports.
+
+## Utility review modes
+
+- [x] Explicit RAW + JPEG pair mode.
+- [x] Empty file review mode.
+- [x] Empty folder review mode.
