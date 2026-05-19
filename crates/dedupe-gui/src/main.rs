@@ -79,6 +79,49 @@ impl Default for DedupeForgeApp {
 }
 
 impl DedupeForgeApp {
+    fn reset_result_selection(&mut self) {
+        self.selected_group_index = 0;
+        self.selected_item_index = 0;
+        self.preview_texture_path = None;
+        self.preview_texture = None;
+    }
+
+    fn sync_report_db_inputs_from_state(&mut self) {
+        self.report_db_path_text = self
+            .controller
+            .state()
+            .report_db_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| ".dedupeforge-reports.sqlite3".to_string());
+        self.selected_report_db_id = self
+            .controller
+            .state()
+            .stored_reports
+            .first()
+            .map(|report| report.id);
+    }
+
+    fn default_report_db_name(&self) -> String {
+        let profile_name = self.controller.state().profile.name.trim();
+        if profile_name.is_empty() {
+            "gui-report".to_string()
+        } else {
+            profile_name
+                .chars()
+                .map(|ch| {
+                    if ch.is_ascii_alphanumeric() {
+                        ch.to_ascii_lowercase()
+                    } else {
+                        '-'
+                    }
+                })
+                .collect::<String>()
+                .trim_matches('-')
+                .to_string()
+        }
+    }
+
     fn load_profile_buffers_from_state(&mut self) {
         let profile = &self.controller.state().profile;
         self.paths_text = join_paths(&profile.paths);
@@ -89,13 +132,10 @@ impl DedupeForgeApp {
             .as_ref()
             .map(|path| path.display().to_string())
             .unwrap_or_default();
-        self.report_db_path_text = self
-            .controller
-            .state()
-            .report_db_path
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| ".dedupeforge-reports.sqlite3".to_string());
+        self.sync_report_db_inputs_from_state();
+        if self.report_db_name_text.trim().is_empty() || self.report_db_name_text == "gui-report" {
+            self.report_db_name_text = self.default_report_db_name();
+        }
     }
 
     fn apply_profile_buffers(&mut self) {
@@ -112,8 +152,7 @@ impl DedupeForgeApp {
         match self.controller.run_scan() {
             Ok(_) => {
                 self.error_message.clear();
-                self.selected_group_index = 0;
-                self.selected_item_index = 0;
+                self.reset_result_selection();
             }
             Err(err) => self.error_message = err.to_string(),
         }
@@ -176,8 +215,7 @@ impl DedupeForgeApp {
                 self.controller = controller;
                 self.load_profile_buffers_from_state();
                 self.error_message.clear();
-                self.selected_group_index = 0;
-                self.selected_item_index = 0;
+                self.reset_result_selection();
             }
             Err(err) => self.error_message = err.to_string(),
         }
@@ -200,8 +238,7 @@ impl DedupeForgeApp {
         {
             Ok(_) => {
                 self.error_message.clear();
-                self.selected_group_index = 0;
-                self.selected_item_index = 0;
+                self.reset_result_selection();
             }
             Err(err) => self.error_message = err.to_string(),
         }
@@ -228,6 +265,7 @@ impl DedupeForgeApp {
             Ok(id) => {
                 self.error_message.clear();
                 self.selected_report_db_id = Some(id);
+                self.sync_report_db_inputs_from_state();
             }
             Err(err) => self.error_message = err.to_string(),
         }
@@ -245,8 +283,8 @@ impl DedupeForgeApp {
         {
             Ok(_) => {
                 self.error_message.clear();
-                self.selected_group_index = 0;
-                self.selected_item_index = 0;
+                self.reset_result_selection();
+                self.selected_report_db_id = Some(id);
             }
             Err(err) => self.error_message = err.to_string(),
         }
@@ -554,8 +592,12 @@ impl eframe::App for DedupeForgeApp {
                 ui.heading("Reports");
                 ui.label("Report File");
                 ui.text_edit_singleline(&mut self.report_path_text);
+                let has_report = self.controller.state().last_report.is_some();
                 ui.horizontal(|ui| {
-                    if ui.button("Export Report").clicked() {
+                    if ui
+                        .add_enabled(has_report, egui::Button::new("Export Report"))
+                        .clicked()
+                    {
                         self.save_report();
                     }
                     if ui.button("Open Report").clicked() {
@@ -573,10 +615,19 @@ impl eframe::App for DedupeForgeApp {
                     if ui.button("Refresh DB").clicked() {
                         self.refresh_report_db();
                     }
-                    if ui.button("Store In DB").clicked() {
+                    if ui
+                        .add_enabled(has_report, egui::Button::new("Store In DB"))
+                        .clicked()
+                    {
                         self.store_report_in_db();
                     }
-                    if ui.button("Open From DB").clicked() {
+                    if ui
+                        .add_enabled(
+                            self.selected_report_db_id.is_some(),
+                            egui::Button::new("Open From DB"),
+                        )
+                        .clicked()
+                    {
                         self.open_report_from_db();
                     }
                 });
@@ -668,6 +719,17 @@ impl eframe::App for DedupeForgeApp {
                     ui.label(format!("Risk: {}", view.risk_label));
                     ui.separator();
                     ui.label(view.summary_line.as_str());
+                    ui.separator();
+                    ui.label(format!("Files: {}", view.scanned_files));
+                    ui.separator();
+                    ui.label(format!(
+                        "Cache: {} hits / {} misses",
+                        view.cache_hits, view.cache_misses
+                    ));
+                    if !view.errors.is_empty() {
+                        ui.separator();
+                        ui.label(format!("Errors: {}", view.errors.len()));
+                    }
                     if filtered_group_indices.len() != view.groups.len() {
                         ui.separator();
                         ui.label(format!(
