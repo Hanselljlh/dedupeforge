@@ -91,6 +91,88 @@ pub fn scan_similar_images(config: &ScanConfig) -> Result<ScanReport> {
     })
 }
 
+pub fn scan_raw_jpeg_pairs(config: &ScanConfig) -> Result<ScanReport> {
+    let collected = collect_files(&config.paths, &config.protected_roots, config.ignore_hidden)?;
+    let files = collected
+        .files
+        .into_iter()
+        .filter(|f| supported_image_extension(&f.path) || supported_raw_extension(&f.path))
+        .collect::<Vec<_>>();
+
+    let duplicate_groups = group_raw_jpeg_pairs(&files);
+
+    Ok(ScanReport {
+        mode: ScanMode::RawJpegPairs,
+        scanned_files: files.len(),
+        candidate_size_groups: 0,
+        cache_hits: 0,
+        cache_misses: 0,
+        duplicate_groups,
+        errors: collected.errors,
+        risk: MatchRisk::Medium,
+    })
+}
+
+pub fn scan_empty_files(config: &ScanConfig) -> Result<ScanReport> {
+    let collected = collect_files(&config.paths, &config.protected_roots, config.ignore_hidden)?;
+    let files = collected.files;
+    let empty_files = files
+        .iter()
+        .filter(|file| file.size == 0)
+        .cloned()
+        .collect::<Vec<_>>();
+    let duplicate_groups = single_review_group(
+        &empty_files,
+        "empty-file",
+        "empty file".to_string(),
+        "empty files ready for review".to_string(),
+    );
+
+    Ok(ScanReport {
+        mode: ScanMode::EmptyFiles,
+        scanned_files: files.len(),
+        candidate_size_groups: 0,
+        cache_hits: 0,
+        cache_misses: 0,
+        duplicate_groups,
+        errors: collected.errors,
+        risk: MatchRisk::Low,
+    })
+}
+
+pub fn scan_empty_folders(config: &ScanConfig) -> Result<ScanReport> {
+    let directories =
+        collect_empty_directories(&config.paths, &config.protected_roots, config.ignore_hidden)?;
+    let scanned_files = directories.len();
+    let as_files = directories
+        .iter()
+        .map(|entry| FileEntry {
+            path: entry.path.clone(),
+            size: 0,
+            modified_unix: entry.modified_unix,
+            identity: None,
+            is_protected: entry.is_protected,
+        })
+        .collect::<Vec<_>>();
+    let duplicate_groups = single_review_group(
+        &as_files,
+        "empty-folder",
+        "empty folder".to_string(),
+        "empty folders ready for review".to_string(),
+    );
+
+    Ok(ScanReport {
+        mode: ScanMode::EmptyFolders,
+        scanned_files,
+        candidate_size_groups: 0,
+        cache_hits: 0,
+        cache_misses: 0,
+        duplicate_groups,
+        errors: Vec::new(),
+        risk: MatchRisk::Low,
+    })
+}
+
 pub fn scan_similar_videos(config: &ScanConfig) -> Result<ScanReport> {
     let tools = MediaToolConfig::default();
     if let Err(err) = media_tools_available(&tools) {
@@ -314,6 +396,23 @@ fn group_similar_image_files(
     build_connected_groups(files, adjacency, pair_reasons, "similar image")
 }
 
+fn group_raw_jpeg_pairs(files: &[FileEntry]) -> Vec<DuplicateGroup> {
+    let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); files.len()];
+    let mut pair_reasons: HashMap<(usize, usize), (u8, String)> = HashMap::new();
+
+    for left in 0..files.len() {
+        for right in (left + 1)..files.len() {
+            if let Some(reason) = raw_jpeg_pair_reason(&files[left], &files[right]) {
+                adjacency[left].push(right);
+                adjacency[right].push(left);
+                pair_reasons.insert((left, right), (100, reason));
+            }
+        }
+    }
+
+    build_connected_groups(files, adjacency, pair_reasons, "raw+jpeg pair")
+}
+
 fn group_similar_video_files(
     cache: Option<&Cache>,
     files: &[FileEntry],
@@ -535,6 +634,40 @@ fn best_component_reason(
         }
     }
     best
+}
+
+fn single_review_group(
+    items: &[FileEntry],
+    algorithm_label: &str,
+    hash: String,
+    reason: String,
+) -> Vec<DuplicateGroup> {
+    if items.is_empty() {
+        return Vec::new();
+    }
+
+    let mut ordered = items.to_vec();
+    ordered.sort_by_key(item_sort_key);
+    let keep_index = choose_keep_index_for_indices(&ordered, &(0..ordered.len()).collect::<Vec<_>>());
+    let items = ordered
+        .into_iter()
+        .enumerate()
+        .map(|(index, item)| DuplicateItem {
+            path: item.path,
+            size: item.size,
+            modified_unix: item.modified_unix,
+            is_protected: item.is_protected,
+            suggested_keep: index == keep_index,
+        })
+        .collect::<Vec<_>>();
+
+    vec![DuplicateGroup {
+        size: items.iter().map(|item| item.size).max().unwrap_or_default(),
+        algorithm: algorithm_label.to_string(),
+        hash,
+        reason,
+        items,
+    }]
 }
 
 fn choose_keep_index_for_indices(items: &[FileEntry], indices: &[usize]) -> usize {
@@ -949,6 +1082,13 @@ struct DirectorySignature {
     is_protected: bool,
 }
 
+#[derive(Clone, Debug)]
+struct EmptyDirectoryEntry {
+    path: PathBuf,
+    modified_unix: Option<i64>,
+    is_protected: bool,
+}
+
 fn collect_directories(
     roots: &[PathBuf],
     protected_roots: &[PathBuf],
@@ -1025,6 +1165,65 @@ fn collect_directories(
     }
 
     Ok(directories)
+}
+
+fn collect_empty_directories(
+    roots: &[PathBuf],
+    protected_roots: &[PathBuf],
+    ignore_hidden: bool,
+) -> Result<Vec<EmptyDirectoryEntry>> {
+    let protected_roots = protected_roots
+        .iter()
+        .map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| path.clone()))
+        .collect::<Vec<_>>();
+    let mut empty_directories = Vec::new();
+
+    for root in roots {
+        let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.clone());
+        for entry in WalkDir::new(&canonical_root)
+            .follow_links(false)
+            .min_depth(1)
+            .into_iter()
+            .filter_entry(|entry| !ignore_hidden || !is_hidden_walk_entry(entry))
+        {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => continue,
+            };
+            if !entry.file_type().is_dir() {
+                continue;
+            }
+
+            let path =
+                std::fs::canonicalize(entry.path()).unwrap_or_else(|_| entry.path().to_path_buf());
+            let is_empty = match std::fs::read_dir(&path) {
+                Ok(mut children) => children.next().is_none(),
+                Err(_) => false,
+            };
+            if !is_empty {
+                continue;
+            }
+
+            let metadata = match entry.metadata() {
+                Ok(metadata) => metadata,
+                Err(_) => continue,
+            };
+            let modified_unix = metadata
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64);
+            let is_protected = protected_roots.iter().any(|root| path.starts_with(root));
+            empty_directories.push(EmptyDirectoryEntry {
+                path,
+                modified_unix,
+                is_protected,
+            });
+        }
+    }
+
+    empty_directories.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(empty_directories)
 }
 
 fn relative_file_signature(relative: &str, size: u64) -> String {
@@ -1236,6 +1435,70 @@ mod tests {
         assert!(report.duplicate_groups[0]
             .reason
             .contains("RAW + JPEG pair"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn raw_jpeg_pair_mode_is_explicit_and_medium_risk() {
+        let root = temp_dir("raw-jpeg-mode");
+        let raw = root.join("IMG_5000.NEF");
+        let jpeg = root.join("IMG-5000.jpeg");
+        std::fs::write(&raw, b"raw").unwrap();
+        std::fs::write(&jpeg, b"jpeg").unwrap();
+
+        let mut config = base_config(&root);
+        config.mode = ScanMode::RawJpegPairs;
+
+        let report = scan_raw_jpeg_pairs(&config).unwrap();
+
+        assert_eq!(report.mode, ScanMode::RawJpegPairs);
+        assert_eq!(report.risk, MatchRisk::Medium);
+        assert_eq!(report.duplicate_groups.len(), 1);
+        assert!(report.duplicate_groups[0].reason.contains("RAW + JPEG pair"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn empty_file_mode_collects_zero_byte_files() {
+        let root = temp_dir("empty-files");
+        std::fs::write(root.join("a.txt"), b"").unwrap();
+        std::fs::write(root.join("b.txt"), b"").unwrap();
+        std::fs::write(root.join("c.txt"), b"data").unwrap();
+
+        let mut config = base_config(&root);
+        config.mode = ScanMode::EmptyFiles;
+
+        let report = scan_empty_files(&config).unwrap();
+
+        assert_eq!(report.mode, ScanMode::EmptyFiles);
+        assert_eq!(report.risk, MatchRisk::Low);
+        assert_eq!(report.duplicate_groups.len(), 1);
+        assert_eq!(report.duplicate_groups[0].items.len(), 2);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn empty_folder_mode_collects_only_empty_directories() {
+        let root = temp_dir("empty-folders");
+        let empty = root.join("empty");
+        let non_empty = root.join("non-empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        std::fs::create_dir_all(&non_empty).unwrap();
+        std::fs::write(non_empty.join("file.txt"), b"data").unwrap();
+
+        let mut config = base_config(&root);
+        config.mode = ScanMode::EmptyFolders;
+
+        let report = scan_empty_folders(&config).unwrap();
+
+        assert_eq!(report.mode, ScanMode::EmptyFolders);
+        assert_eq!(report.risk, MatchRisk::Low);
+        assert_eq!(report.duplicate_groups.len(), 1);
+        assert_eq!(report.duplicate_groups[0].items.len(), 1);
+        assert!(report.duplicate_groups[0].items[0].path.ends_with("empty"));
 
         fs::remove_dir_all(root).unwrap();
     }

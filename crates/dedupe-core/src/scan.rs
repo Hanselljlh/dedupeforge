@@ -1,6 +1,9 @@
 use crate::fs_walk::{collect_files, FileEntry, FileIdentity};
 use crate::hash::{hash_bytes, hash_file, hash_file_prefix, HashAlgorithm};
-use crate::similar::{scan_duplicate_folders, scan_similar_images, scan_similar_names};
+use crate::similar::{
+    scan_duplicate_folders, scan_empty_files, scan_empty_folders, scan_raw_jpeg_pairs,
+    scan_similar_images, scan_similar_names,
+};
 use crate::verify::files_equal;
 use anyhow::Result;
 use dedupe_cache::{Cache, CacheFileIdentity, CacheHashKey, CacheLookupPolicy, HashScope};
@@ -112,9 +115,12 @@ pub enum ScanMode {
     Exact,
     SimilarNames,
     SimilarImages,
+    RawJpegPairs,
     SimilarVideos,
     SimilarAudio,
     DuplicateFolders,
+    EmptyFiles,
+    EmptyFolders,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
@@ -176,6 +182,24 @@ where
             ));
             Ok(report)
         }
+        ScanMode::RawJpegPairs => {
+            ensure_not_cancelled(&cancel)?;
+            on_progress(progress_event(
+                ScanProgressPhase::CollectingFiles,
+                0,
+                0,
+                "Scanning RAW + JPEG pairs".to_string(),
+            ));
+            let report = scan_raw_jpeg_pairs(config)?;
+            ensure_not_cancelled(&cancel)?;
+            on_progress(progress_event(
+                ScanProgressPhase::Finished,
+                report.scanned_files,
+                report.scanned_files,
+                format!("Scan complete: {} groups", report.duplicate_groups.len()),
+            ));
+            Ok(report)
+        }
         ScanMode::SimilarVideos => {
             ensure_not_cancelled(&cancel)?;
             on_progress(progress_event(
@@ -221,6 +245,42 @@ where
                 "Scanning duplicate folders".to_string(),
             ));
             let report = scan_duplicate_folders(config)?;
+            ensure_not_cancelled(&cancel)?;
+            on_progress(progress_event(
+                ScanProgressPhase::Finished,
+                report.scanned_files,
+                report.scanned_files,
+                format!("Scan complete: {} groups", report.duplicate_groups.len()),
+            ));
+            Ok(report)
+        }
+        ScanMode::EmptyFiles => {
+            ensure_not_cancelled(&cancel)?;
+            on_progress(progress_event(
+                ScanProgressPhase::CollectingFiles,
+                0,
+                0,
+                "Scanning empty files".to_string(),
+            ));
+            let report = scan_empty_files(config)?;
+            ensure_not_cancelled(&cancel)?;
+            on_progress(progress_event(
+                ScanProgressPhase::Finished,
+                report.scanned_files,
+                report.scanned_files,
+                format!("Scan complete: {} groups", report.duplicate_groups.len()),
+            ));
+            Ok(report)
+        }
+        ScanMode::EmptyFolders => {
+            ensure_not_cancelled(&cancel)?;
+            on_progress(progress_event(
+                ScanProgressPhase::CollectingFiles,
+                0,
+                0,
+                "Scanning empty folders".to_string(),
+            ));
+            let report = scan_empty_folders(config)?;
             ensure_not_cancelled(&cancel)?;
             on_progress(progress_event(
                 ScanProgressPhase::Finished,

@@ -346,6 +346,11 @@ impl eframe::App for DedupeForgeApp {
                         );
                         ui.selectable_value(
                             &mut profile.mode,
+                            ScanMode::RawJpegPairs,
+                            "RAW + JPEG pairs",
+                        );
+                        ui.selectable_value(
+                            &mut profile.mode,
                             ScanMode::SimilarVideos,
                             "Similar videos",
                         );
@@ -358,6 +363,16 @@ impl eframe::App for DedupeForgeApp {
                             &mut profile.mode,
                             ScanMode::DuplicateFolders,
                             "Duplicate folders",
+                        );
+                        ui.selectable_value(
+                            &mut profile.mode,
+                            ScanMode::EmptyFiles,
+                            "Empty files",
+                        );
+                        ui.selectable_value(
+                            &mut profile.mode,
+                            ScanMode::EmptyFolders,
+                            "Empty folders",
                         );
                     });
 
@@ -1015,9 +1030,12 @@ fn scan_mode_label(mode: ScanMode) -> &'static str {
         ScanMode::Exact => "exact",
         ScanMode::SimilarNames => "similar-names",
         ScanMode::SimilarImages => "similar-images",
+        ScanMode::RawJpegPairs => "raw-jpeg-pairs",
         ScanMode::SimilarVideos => "similar-videos",
         ScanMode::SimilarAudio => "similar-audio",
         ScanMode::DuplicateFolders => "duplicate-folders",
+        ScanMode::EmptyFiles => "empty-files",
+        ScanMode::EmptyFolders => "empty-folders",
     }
 }
 

@@ -162,9 +162,12 @@ enum CliScanMode {
     Exact,
     SimilarNames,
     SimilarImages,
+    RawJpegPairs,
     SimilarVideos,
     SimilarAudio,
     DuplicateFolders,
+    EmptyFiles,
+    EmptyFolders,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, ValueEnum)]
@@ -518,9 +521,12 @@ impl From<CliScanMode> for ScanMode {
             CliScanMode::Exact => ScanMode::Exact,
             CliScanMode::SimilarNames => ScanMode::SimilarNames,
             CliScanMode::SimilarImages => ScanMode::SimilarImages,
+            CliScanMode::RawJpegPairs => ScanMode::RawJpegPairs,
             CliScanMode::SimilarVideos => ScanMode::SimilarVideos,
             CliScanMode::SimilarAudio => ScanMode::SimilarAudio,
             CliScanMode::DuplicateFolders => ScanMode::DuplicateFolders,
+            CliScanMode::EmptyFiles => ScanMode::EmptyFiles,
+            CliScanMode::EmptyFolders => ScanMode::EmptyFolders,
         }
     }
 }
@@ -643,9 +649,12 @@ fn scan_mode_label(mode: ScanMode) -> &'static str {
         ScanMode::Exact => "exact",
         ScanMode::SimilarNames => "similar-names",
         ScanMode::SimilarImages => "similar-images",
+        ScanMode::RawJpegPairs => "raw-jpeg-pairs",
         ScanMode::SimilarVideos => "similar-videos",
         ScanMode::SimilarAudio => "similar-audio",
         ScanMode::DuplicateFolders => "duplicate-folders",
+        ScanMode::EmptyFiles => "empty-files",
+        ScanMode::EmptyFolders => "empty-folders",
     }
 }
 

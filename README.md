@@ -34,11 +34,14 @@ Implemented:
 - similar filename matching
 - duplicate folder matching
 - similar image matching
+- explicit RAW + JPEG pair mode
 - RAW + JPEG pair detection
 - EXIF-aware image matching reasons
 - cached perceptual image hashes
 - similar video matching
 - similar audio matching
+- empty file review mode
+- empty folder review mode
 - FFmpeg/ffprobe dependency detection for media scans
 - cache-backed video and audio fingerprints
 - ignored file patterns for non-content scans
@@ -165,6 +168,12 @@ Run duplicate folder matching with ignored patterns:
 cargo run --release --bin dedupeforge -- /data/library --mode duplicate-folders --ignore-pattern "*.tmp" --ignore-pattern "*.bak"
 ```
 
+Review explicit RAW + JPEG companion-file pairs:
+
+```bash
+cargo run --release --bin dedupeforge -- /data/photos --mode raw-jpeg-pairs
+```
+
 Run similar image matching:
 
 ```bash
@@ -187,6 +196,18 @@ Run similar audio matching:
 
 ```bash
 cargo run --release --bin dedupeforge -- /data/music --mode similar-audio --media-duration-tolerance-secs 2
+```
+
+Review zero-byte files:
+
+```bash
+cargo run --release --bin dedupeforge -- /data/library --mode empty-files
+```
+
+Review empty folders:
+
+```bash
+cargo run --release --bin dedupeforge -- /data/library --mode empty-folders
 ```
 
 Run exact duplicate scanning inside zip archives too:
@@ -349,9 +370,12 @@ Current similarity behavior:
 
 - `--mode similar-names` is explainable but high risk and should be reviewed manually
 - `--mode similar-images` uses perceptual hashing and is high risk
+- `--mode raw-jpeg-pairs` is medium risk and tuned for photo-library companion-file review
 - `--mode similar-videos` uses sampled frame fingerprints and is high risk
 - `--mode similar-audio` uses sampled audio fingerprints and is high risk
 - `--mode duplicate-folders` uses file-tree overlap and is medium risk
+- `--mode empty-files` is low risk and reports zero-byte files for cleanup review
+- `--mode empty-folders` is low risk and reports empty directories for cleanup review
 - thresholds are tunable with `--name-similarity-threshold` and `--folder-similarity-threshold`
 - image similarity is tunable with `--image-hash-size` and `--image-hamming-threshold`
 - image mode can use cache-backed perceptual hashes
@@ -372,6 +396,7 @@ Current GUI status:
 - the results side panel now includes metadata and inline text/binary preview support
 - the GUI supports `similar-images` mode and shows an explicit false-positive warning for image matches
 - the GUI now exposes `similar-videos` and `similar-audio` modes and shows the same warning for media similarity scans
+- the GUI now exposes explicit RAW + JPEG pair, empty-file, and empty-folder review modes
 
 ## Planned product modes
 
