@@ -941,10 +941,10 @@ fn render_group_details(
         });
 
     let mut keeper_override_requested = false;
-    if group.items.get(*selected_item_index).is_some() {
-        if ui.button("Make Selected Keeper").clicked() {
-            keeper_override_requested = true;
-        }
+    if group.items.get(*selected_item_index).is_some()
+        && ui.button("Make Selected Keeper").clicked()
+    {
+        keeper_override_requested = true;
     }
 
     ui.separator();
