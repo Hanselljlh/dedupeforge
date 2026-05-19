@@ -8,6 +8,7 @@ use dedupe_media::{
     supported_raw_extension, supported_video_extension, MediaToolConfig,
 };
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -170,6 +171,62 @@ pub fn scan_empty_folders(config: &ScanConfig) -> Result<ScanReport> {
         duplicate_groups,
         errors: Vec::new(),
         risk: MatchRisk::Low,
+    })
+}
+
+pub fn scan_large_files(config: &ScanConfig) -> Result<ScanReport> {
+    let collected = collect_files(&config.paths, &config.protected_roots, config.ignore_hidden)?;
+    let files = collected.files;
+    let large_files = files
+        .iter()
+        .filter(|file| file.size >= config.min_size)
+        .cloned()
+        .collect::<Vec<_>>();
+    let duplicate_groups = single_review_group_with_sort(
+        &large_files,
+        "large-file",
+        format!(">= {} bytes", config.min_size),
+        format!("files at or above {} bytes", config.min_size),
+        large_file_sort_key,
+    );
+
+    Ok(ScanReport {
+        mode: ScanMode::LargeFiles,
+        scanned_files: files.len(),
+        candidate_size_groups: 0,
+        cache_hits: 0,
+        cache_misses: 0,
+        duplicate_groups,
+        errors: collected.errors,
+        risk: MatchRisk::Low,
+    })
+}
+
+pub fn scan_bad_extensions(config: &ScanConfig) -> Result<ScanReport> {
+    let collected = collect_files(&config.paths, &config.protected_roots, config.ignore_hidden)?;
+    let files = collected.files;
+    let mismatched = files
+        .iter()
+        .filter(|file| file.size > 0)
+        .filter(|file| has_bad_extension(file))
+        .cloned()
+        .collect::<Vec<_>>();
+    let duplicate_groups = single_review_group(
+        &mismatched,
+        "bad-extension",
+        "extension mismatch".to_string(),
+        "files whose extension does not match detected content".to_string(),
+    );
+
+    Ok(ScanReport {
+        mode: ScanMode::BadExtensions,
+        scanned_files: files.len(),
+        candidate_size_groups: 0,
+        cache_hits: 0,
+        cache_misses: 0,
+        duplicate_groups,
+        errors: collected.errors,
+        risk: MatchRisk::Medium,
     })
 }
 
@@ -670,6 +727,42 @@ fn single_review_group(
     }]
 }
 
+fn single_review_group_with_sort<K: Ord>(
+    items: &[FileEntry],
+    algorithm_label: &str,
+    hash: String,
+    reason: String,
+    sort_key: impl Fn(&FileEntry) -> K,
+) -> Vec<DuplicateGroup> {
+    if items.is_empty() {
+        return Vec::new();
+    }
+
+    let mut ordered = items.to_vec();
+    ordered.sort_by_key(sort_key);
+    let keep_index =
+        choose_keep_index_for_indices(&ordered, &(0..ordered.len()).collect::<Vec<_>>());
+    let items = ordered
+        .into_iter()
+        .enumerate()
+        .map(|(index, item)| DuplicateItem {
+            path: item.path,
+            size: item.size,
+            modified_unix: item.modified_unix,
+            is_protected: item.is_protected,
+            suggested_keep: index == keep_index,
+        })
+        .collect::<Vec<_>>();
+
+    vec![DuplicateGroup {
+        size: items.iter().map(|item| item.size).max().unwrap_or_default(),
+        algorithm: algorithm_label.to_string(),
+        hash,
+        reason,
+        items,
+    }]
+}
+
 fn choose_keep_index_for_indices(items: &[FileEntry], indices: &[usize]) -> usize {
     indices
         .iter()
@@ -1013,6 +1106,56 @@ fn extension_value(path: &Path) -> Option<String> {
         .map(|ext| ext.to_ascii_lowercase())
 }
 
+fn has_bad_extension(file: &FileEntry) -> bool {
+    let Some(extension) = extension_value(&file.path) else {
+        return false;
+    };
+    let Ok(bytes) = fs::read(&file.path) else {
+        return false;
+    };
+    let Some(expected_extensions) = detected_extensions(&bytes) else {
+        return false;
+    };
+    !expected_extensions.iter().any(|expected| *expected == extension)
+}
+
+fn detected_extensions(bytes: &[u8]) -> Option<&'static [&'static str]> {
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some(&["jpg", "jpeg"]);
+    }
+    if bytes.starts_with(b"\x89PNG\r\n\x1A\n") {
+        return Some(&["png"]);
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some(&["gif"]);
+    }
+    if bytes.starts_with(b"BM") {
+        return Some(&["bmp"]);
+    }
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        return Some(&["webp"]);
+    }
+    if bytes.starts_with(b"PK\x03\x04") {
+        return Some(&["zip"]);
+    }
+    if bytes.starts_with(b"%PDF-") {
+        return Some(&["pdf"]);
+    }
+    if bytes.starts_with(b"ID3") {
+        return Some(&["mp3"]);
+    }
+    if bytes.starts_with(b"fLaC") {
+        return Some(&["flac"]);
+    }
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WAVE" {
+        return Some(&["wav"]);
+    }
+    if bytes.starts_with(b"OggS") {
+        return Some(&["ogg", "opus"]);
+    }
+    None
+}
+
 fn open_cache_if_enabled(config: &crate::scan::CacheConfig) -> Result<Option<Cache>> {
     if !config.enabled {
         return Ok(None);
@@ -1080,6 +1223,15 @@ struct DirectorySignature {
     file_count: usize,
     modified_unix: Option<i64>,
     is_protected: bool,
+}
+
+fn large_file_sort_key(f: &FileEntry) -> (bool, std::cmp::Reverse<u64>, Option<i64>, String) {
+    (
+        !f.is_protected,
+        std::cmp::Reverse(f.size),
+        f.modified_unix,
+        f.path.to_string_lossy().to_lowercase(),
+    )
 }
 
 #[derive(Clone, Debug)]

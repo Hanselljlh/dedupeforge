@@ -42,6 +42,8 @@ Implemented:
 - similar audio matching
 - empty file review mode
 - empty folder review mode
+- large-file review mode
+- bad-extension detection mode
 - FFmpeg/ffprobe dependency detection for media scans
 - cache-backed video and audio fingerprints
 - ignored file patterns for non-content scans
@@ -210,6 +212,18 @@ Review empty folders:
 cargo run --release --bin dedupeforge -- /data/library --mode empty-folders
 ```
 
+Review large files above a threshold:
+
+```bash
+cargo run --release --bin dedupeforge -- /data/library --mode large-files --min-size 104857600
+```
+
+Review files whose extension does not match detected content:
+
+```bash
+cargo run --release --bin dedupeforge -- /data/library --mode bad-extensions
+```
+
 Run exact duplicate scanning inside zip archives too:
 
 ```bash
@@ -376,6 +390,8 @@ Current similarity behavior:
 - `--mode duplicate-folders` uses file-tree overlap and is medium risk
 - `--mode empty-files` is low risk and reports zero-byte files for cleanup review
 - `--mode empty-folders` is low risk and reports empty directories for cleanup review
+- `--mode large-files` is low risk and reports files at or above the chosen size threshold
+- `--mode bad-extensions` is medium risk and flags files whose extension does not match detected content
 - thresholds are tunable with `--name-similarity-threshold` and `--folder-similarity-threshold`
 - image similarity is tunable with `--image-hash-size` and `--image-hamming-threshold`
 - image mode can use cache-backed perceptual hashes
@@ -397,6 +413,7 @@ Current GUI status:
 - the GUI supports `similar-images` mode and shows an explicit false-positive warning for image matches
 - the GUI now exposes `similar-videos` and `similar-audio` modes and shows the same warning for media similarity scans
 - the GUI now exposes explicit RAW + JPEG pair, empty-file, and empty-folder review modes
+- the GUI now exposes large-file and bad-extension hygiene review modes
 
 ## Planned product modes
 

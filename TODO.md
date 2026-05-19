@@ -70,3 +70,8 @@ Current decision:
 - [x] Explicit RAW + JPEG pair mode.
 - [x] Empty file review mode.
 - [x] Empty folder review mode.
+
+## File hygiene modes
+
+- [x] Large-file review mode.
+- [x] Bad-extension detection mode.

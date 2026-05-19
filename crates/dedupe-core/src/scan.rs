@@ -1,8 +1,8 @@
 use crate::fs_walk::{collect_files, FileEntry, FileIdentity};
 use crate::hash::{hash_bytes, hash_file, hash_file_prefix, HashAlgorithm};
 use crate::similar::{
-    scan_duplicate_folders, scan_empty_files, scan_empty_folders, scan_raw_jpeg_pairs,
-    scan_similar_images, scan_similar_names,
+    scan_bad_extensions, scan_duplicate_folders, scan_empty_files, scan_empty_folders,
+    scan_large_files, scan_raw_jpeg_pairs, scan_similar_images, scan_similar_names,
 };
 use crate::verify::files_equal;
 use anyhow::Result;
@@ -121,6 +121,8 @@ pub enum ScanMode {
     DuplicateFolders,
     EmptyFiles,
     EmptyFolders,
+    LargeFiles,
+    BadExtensions,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
@@ -281,6 +283,42 @@ where
                 "Scanning empty folders".to_string(),
             ));
             let report = scan_empty_folders(config)?;
+            ensure_not_cancelled(&cancel)?;
+            on_progress(progress_event(
+                ScanProgressPhase::Finished,
+                report.scanned_files,
+                report.scanned_files,
+                format!("Scan complete: {} groups", report.duplicate_groups.len()),
+            ));
+            Ok(report)
+        }
+        ScanMode::LargeFiles => {
+            ensure_not_cancelled(&cancel)?;
+            on_progress(progress_event(
+                ScanProgressPhase::CollectingFiles,
+                0,
+                0,
+                "Scanning large files".to_string(),
+            ));
+            let report = scan_large_files(config)?;
+            ensure_not_cancelled(&cancel)?;
+            on_progress(progress_event(
+                ScanProgressPhase::Finished,
+                report.scanned_files,
+                report.scanned_files,
+                format!("Scan complete: {} groups", report.duplicate_groups.len()),
+            ));
+            Ok(report)
+        }
+        ScanMode::BadExtensions => {
+            ensure_not_cancelled(&cancel)?;
+            on_progress(progress_event(
+                ScanProgressPhase::CollectingFiles,
+                0,
+                0,
+                "Scanning bad extensions".to_string(),
+            ));
+            let report = scan_bad_extensions(config)?;
             ensure_not_cancelled(&cancel)?;
             on_progress(progress_event(
                 ScanProgressPhase::Finished,

@@ -307,6 +307,55 @@ fn empty_folder_mode_reports_empty_directories() {
 }
 
 #[test]
+fn large_file_mode_reports_large_files_review() {
+    let root = std::env::temp_dir().join("dedupeforge-cli-large-files");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("small.bin"), b"1234").unwrap();
+    std::fs::write(root.join("large.bin"), b"1234567890").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_dedupeforge"))
+        .arg(root.as_os_str())
+        .arg("--mode")
+        .arg("large-files")
+        .arg("--min-size")
+        .arg("5")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Mode: large-files"));
+    assert!(stdout.contains("Match risk: low"));
+    assert!(stdout.contains("files at or above 5 bytes"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn bad_extension_mode_reports_extension_mismatches() {
+    let root = std::env::temp_dir().join("dedupeforge-cli-bad-extensions");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("photo.txt"), b"\x89PNG\r\n\x1A\nrest").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_dedupeforge"))
+        .arg(root.as_os_str())
+        .arg("--mode")
+        .arg("bad-extensions")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Mode: bad-extensions"));
+    assert!(stdout.contains("Match risk: medium"));
+    assert!(stdout.contains("extension does not match detected content"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn similar_video_mode_reports_missing_dependency_clearly() {
     let root = fixture_dir("exact-basic");
 

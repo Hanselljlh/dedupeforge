@@ -374,6 +374,16 @@ impl eframe::App for DedupeForgeApp {
                             ScanMode::EmptyFolders,
                             "Empty folders",
                         );
+                        ui.selectable_value(
+                            &mut profile.mode,
+                            ScanMode::LargeFiles,
+                            "Large files",
+                        );
+                        ui.selectable_value(
+                            &mut profile.mode,
+                            ScanMode::BadExtensions,
+                            "Bad extensions",
+                        );
                     });
 
                 ui.add_space(8.0);
@@ -1036,6 +1046,8 @@ fn scan_mode_label(mode: ScanMode) -> &'static str {
         ScanMode::DuplicateFolders => "duplicate-folders",
         ScanMode::EmptyFiles => "empty-files",
         ScanMode::EmptyFolders => "empty-folders",
+        ScanMode::LargeFiles => "large-files",
+        ScanMode::BadExtensions => "bad-extensions",
     }
 }
 

@@ -185,3 +185,18 @@ Exit criteria:
 - utility modes reuse the shared scan/report pipeline
 - CLI and GUI expose the same new modes
 - low-risk utility modes are labeled clearly in results
+
+## Phase 10: File hygiene modes
+
+Goal: help users clean up non-duplicate library problems with the same review-first workflow.
+
+Implemented:
+
+- large-file review mode
+- bad-extension detection mode
+
+Exit criteria:
+
+- hygiene modes reuse the shared scan/report pipeline
+- CLI and GUI expose the same new modes
+- risk labels explain which hygiene modes are low-risk vs medium-risk

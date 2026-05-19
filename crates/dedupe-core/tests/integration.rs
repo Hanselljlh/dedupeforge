@@ -182,3 +182,38 @@ fn empty_file_mode_finds_zero_byte_files() {
 
     let _ = fs::remove_dir_all(dir);
 }
+
+#[test]
+fn large_file_mode_sorts_biggest_files_first() {
+    let dir = temp_dir("large-files");
+    write(&dir, "small.bin", b"1234");
+    write(&dir, "large.bin", b"1234567890");
+
+    let mut config = base_config(vec![dir.clone()]);
+    config.mode = ScanMode::LargeFiles;
+    config.min_size = 1;
+
+    let report = scan(&config).unwrap();
+    assert_eq!(report.duplicate_groups.len(), 1);
+    assert_eq!(report.duplicate_groups[0].items[0].path.file_name().and_then(|s| s.to_str()), Some("large.bin"));
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn bad_extension_mode_flags_content_mismatches() {
+    let dir = temp_dir("bad-extensions");
+    write(&dir, "photo.txt", b"\x89PNG\r\n\x1A\nrest");
+    write(&dir, "good.png", b"\x89PNG\r\n\x1A\nrest");
+
+    let mut config = base_config(vec![dir.clone()]);
+    config.mode = ScanMode::BadExtensions;
+
+    let report = scan(&config).unwrap();
+    assert_eq!(report.duplicate_groups.len(), 1);
+    assert_eq!(report.duplicate_groups[0].items.len(), 1);
+    assert!(report.duplicate_groups[0].items[0].path.ends_with("photo.txt"));
+    assert_eq!(report.risk, MatchRisk::Medium);
+
+    let _ = fs::remove_dir_all(dir);
+}
