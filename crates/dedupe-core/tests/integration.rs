@@ -217,3 +217,54 @@ fn bad_extension_mode_flags_content_mismatches() {
 
     let _ = fs::remove_dir_all(dir);
 }
+
+#[test]
+fn duplicate_archive_member_mode_surfaces_archive_duplicates() {
+    use std::io::Write;
+
+    let dir = temp_dir("archive-members");
+    let left_zip = dir.join("left.zip");
+    let right_zip = dir.join("right.zip");
+
+    let file = fs::File::create(&left_zip).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    zip.start_file("a.txt", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(b"same-bytes").unwrap();
+    zip.finish().unwrap();
+
+    let file = fs::File::create(&right_zip).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    zip.start_file("b.txt", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(b"same-bytes").unwrap();
+    zip.finish().unwrap();
+
+    let mut config = base_config(vec![dir.clone()]);
+    config.mode = ScanMode::DuplicateArchiveMembers;
+
+    let report = scan(&config).unwrap();
+    assert_eq!(report.duplicate_groups.len(), 1);
+    assert_eq!(report.risk, MatchRisk::Medium);
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn empty_archive_mode_finds_archives_without_file_members() {
+    let dir = temp_dir("empty-archives");
+    let empty_zip = dir.join("empty.zip");
+    let file = fs::File::create(&empty_zip).unwrap();
+    let zip = zip::ZipWriter::new(file);
+    zip.finish().unwrap();
+
+    let mut config = base_config(vec![dir.clone()]);
+    config.mode = ScanMode::EmptyArchives;
+
+    let report = scan(&config).unwrap();
+    assert_eq!(report.duplicate_groups.len(), 1);
+    assert_eq!(report.duplicate_groups[0].items.len(), 1);
+    assert!(report.duplicate_groups[0].items[0].path.ends_with("empty.zip"));
+
+    let _ = fs::remove_dir_all(dir);
+}

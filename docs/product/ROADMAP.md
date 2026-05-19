@@ -200,3 +200,18 @@ Exit criteria:
 - hygiene modes reuse the shared scan/report pipeline
 - CLI and GUI expose the same new modes
 - risk labels explain which hygiene modes are low-risk vs medium-risk
+
+## Phase 11: Archive hygiene modes
+
+Goal: make archive cleanup and archive inspection first-class review workflows.
+
+Implemented:
+
+- duplicate archive-member review mode
+- empty-archive review mode
+
+Exit criteria:
+
+- archive-focused review modes reuse the shared scan/report pipeline
+- CLI and GUI expose the same new modes
+- archive inspection stays non-actionable by default

@@ -230,6 +230,33 @@ pub fn scan_bad_extensions(config: &ScanConfig) -> Result<ScanReport> {
     })
 }
 
+pub fn scan_empty_archives(config: &ScanConfig) -> Result<ScanReport> {
+    let archives = collect_zip_files(&config.paths, config.ignore_hidden);
+    let scanned_files = archives.len();
+    let empty_archives = archives
+        .iter()
+        .filter(|file| archive_is_empty(&file.path))
+        .cloned()
+        .collect::<Vec<_>>();
+    let duplicate_groups = single_review_group(
+        &empty_archives,
+        "empty-archive",
+        "empty archive".to_string(),
+        "archives with no file members".to_string(),
+    );
+
+    Ok(ScanReport {
+        mode: ScanMode::EmptyArchives,
+        scanned_files,
+        candidate_size_groups: 0,
+        cache_hits: 0,
+        cache_misses: 0,
+        duplicate_groups,
+        errors: Vec::new(),
+        risk: MatchRisk::Low,
+    })
+}
+
 pub fn scan_similar_videos(config: &ScanConfig) -> Result<ScanReport> {
     let tools = MediaToolConfig::default();
     if let Err(err) = media_tools_available(&tools) {
@@ -1154,6 +1181,70 @@ fn detected_extensions(bytes: &[u8]) -> Option<&'static [&'static str]> {
         return Some(&["ogg", "opus"]);
     }
     None
+}
+
+fn collect_zip_files(roots: &[PathBuf], ignore_hidden: bool) -> Vec<FileEntry> {
+    let mut files = Vec::new();
+    for root in roots {
+        for entry in WalkDir::new(root)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|entry| !ignore_hidden || !is_hidden_walk_entry(entry))
+        {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => continue,
+            };
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            if !matches!(
+                entry.path()
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| ext.to_ascii_lowercase())
+                    .as_deref(),
+                Some("zip")
+            ) {
+                continue;
+            }
+            let metadata = match entry.metadata() {
+                Ok(metadata) => metadata,
+                Err(_) => continue,
+            };
+            let modified_unix = metadata
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64);
+            files.push(FileEntry {
+                path: entry.path().to_path_buf(),
+                size: metadata.len(),
+                modified_unix,
+                identity: None,
+                is_protected: false,
+            });
+        }
+    }
+    files
+}
+
+fn archive_is_empty(path: &Path) -> bool {
+    let Ok(file) = fs::File::open(path) else {
+        return false;
+    };
+    let Ok(mut archive) = zip::ZipArchive::new(file) else {
+        return false;
+    };
+    for index in 0..archive.len() {
+        let Ok(member) = archive.by_index(index) else {
+            continue;
+        };
+        if member.is_file() {
+            return false;
+        }
+    }
+    true
 }
 
 fn open_cache_if_enabled(config: &crate::scan::CacheConfig) -> Result<Option<Cache>> {
