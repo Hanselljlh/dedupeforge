@@ -15,5 +15,6 @@ dedupe-core = { path = "../dedupe-core" }
 dedupe-report-db = { path = "../dedupe-report-db" }
 eframe.workspace = true
 image.workspace = true
+rfd.workspace = true
 serde.workspace = true
 serde_json.workspace = true
