@@ -5,6 +5,7 @@ use dedupe_gui::{
 };
 use eframe::egui;
 use eframe::egui::{ColorImage, TextureHandle, TextureOptions};
+use rfd::FileDialog;
 use std::path::{Path, PathBuf};
 
 fn main() -> eframe::Result<()> {
@@ -45,6 +46,14 @@ struct DedupeForgeApp {
     error_message: String,
     preview_texture_path: Option<PathBuf>,
     preview_texture: Option<TextureHandle>,
+    active_workspace: WorkspaceTab,
+    keep_cache_between_scans: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkspaceTab {
+    Setup,
+    Review,
 }
 
 impl Default for DedupeForgeApp {
@@ -72,6 +81,8 @@ impl Default for DedupeForgeApp {
             error_message: String::new(),
             preview_texture_path: None,
             preview_texture: None,
+            active_workspace: WorkspaceTab::Setup,
+            keep_cache_between_scans: true,
         };
         app.load_profile_buffers_from_state();
         app
@@ -79,6 +90,68 @@ impl Default for DedupeForgeApp {
 }
 
 impl DedupeForgeApp {
+    fn append_path_line(buffer: &mut String, path: PathBuf) {
+        let value = path.display().to_string();
+        if buffer.lines().any(|line| line.trim() == value) {
+            return;
+        }
+        if !buffer.trim().is_empty() && !buffer.ends_with('\n') {
+            buffer.push('\n');
+        }
+        buffer.push_str(&value);
+    }
+
+    fn browse_source_folder(&mut self) {
+        if let Some(path) = FileDialog::new().pick_folder() {
+            Self::append_path_line(&mut self.paths_text, path);
+        }
+    }
+
+    fn browse_protected_folder(&mut self) {
+        if let Some(path) = FileDialog::new().pick_folder() {
+            Self::append_path_line(&mut self.protected_text, path);
+        }
+    }
+
+    fn browse_quarantine_root(&mut self) {
+        if let Some(path) = FileDialog::new().pick_folder() {
+            self.quarantine_root_text = path.display().to_string();
+        }
+    }
+
+    fn browse_manifest_path(&mut self) {
+        if let Some(path) = FileDialog::new().add_filter("JSON", &["json"]).pick_file() {
+            self.manifest_path_text = path.display().to_string();
+        }
+    }
+
+    fn browse_session_path(&mut self) {
+        if let Some(path) = FileDialog::new().add_filter("JSON", &["json"]).save_file() {
+            self.session_path_text = path.display().to_string();
+        }
+    }
+
+    fn browse_report_path(&mut self) {
+        if let Some(path) = FileDialog::new().add_filter("JSON", &["json"]).save_file() {
+            self.report_path_text = path.display().to_string();
+        }
+    }
+
+    fn browse_report_open_path(&mut self) {
+        if let Some(path) = FileDialog::new().add_filter("JSON", &["json"]).pick_file() {
+            self.report_path_text = path.display().to_string();
+        }
+    }
+
+    fn browse_report_db_path(&mut self) {
+        if let Some(path) = FileDialog::new()
+            .add_filter("SQLite", &["sqlite", "sqlite3", "db"])
+            .save_file()
+        {
+            self.report_db_path_text = path.display().to_string();
+        }
+    }
+
     fn reset_result_selection(&mut self) {
         self.selected_group_index = 0;
         self.selected_item_index = 0;
@@ -127,11 +200,12 @@ impl DedupeForgeApp {
         self.paths_text = join_paths(&profile.paths);
         self.protected_text = join_paths(&profile.protected_roots);
         self.ignore_patterns_text = profile.ignore_patterns.join("\n");
+        self.keep_cache_between_scans = profile.cache_enabled;
         self.cache_path_text = profile
             .cache_path
             .as_ref()
             .map(|path| path.display().to_string())
-            .unwrap_or_default();
+            .unwrap_or_else(|| ".dedupeforge-cache.sqlite3".to_string());
         self.sync_report_db_inputs_from_state();
         if self.report_db_name_text.trim().is_empty() || self.report_db_name_text == "gui-report" {
             self.report_db_name_text = self.default_report_db_name();
@@ -144,7 +218,13 @@ impl DedupeForgeApp {
         profile.paths = parse_paths(&self.paths_text);
         profile.protected_roots = parse_paths(&self.protected_text);
         profile.ignore_patterns = parse_lines(&self.ignore_patterns_text);
-        profile.cache_path = parse_optional_path(&self.cache_path_text);
+        profile.cache_enabled = self.keep_cache_between_scans;
+        profile.cache_path = if self.keep_cache_between_scans {
+            parse_optional_path(&self.cache_path_text)
+                .or_else(|| Some(PathBuf::from(".dedupeforge-cache.sqlite3")))
+        } else {
+            None
+        };
     }
 
     fn run_scan(&mut self) {
@@ -153,6 +233,7 @@ impl DedupeForgeApp {
             Ok(_) => {
                 self.error_message.clear();
                 self.reset_result_selection();
+                self.active_workspace = WorkspaceTab::Review;
             }
             Err(err) => self.error_message = err.to_string(),
         }
@@ -216,6 +297,9 @@ impl DedupeForgeApp {
                 self.load_profile_buffers_from_state();
                 self.error_message.clear();
                 self.reset_result_selection();
+                if self.controller.state().last_report.is_some() {
+                    self.active_workspace = WorkspaceTab::Review;
+                }
             }
             Err(err) => self.error_message = err.to_string(),
         }
@@ -239,6 +323,7 @@ impl DedupeForgeApp {
             Ok(_) => {
                 self.error_message.clear();
                 self.reset_result_selection();
+                self.active_workspace = WorkspaceTab::Review;
             }
             Err(err) => self.error_message = err.to_string(),
         }
@@ -285,6 +370,7 @@ impl DedupeForgeApp {
                 self.error_message.clear();
                 self.reset_result_selection();
                 self.selected_report_db_id = Some(id);
+                self.active_workspace = WorkspaceTab::Review;
             }
             Err(err) => self.error_message = err.to_string(),
         }
@@ -306,6 +392,17 @@ impl eframe::App for DedupeForgeApp {
                 ui.heading("DedupeForge");
                 ui.separator();
                 ui.label(self.controller.state().status_message.as_str());
+                ui.separator();
+                ui.selectable_value(
+                    &mut self.active_workspace,
+                    WorkspaceTab::Setup,
+                    "Scan Setup",
+                );
+                ui.selectable_value(
+                    &mut self.active_workspace,
+                    WorkspaceTab::Review,
+                    "Completed Scans",
+                );
                 if !self.error_message.is_empty() {
                     ui.separator();
                     ui.colored_label(
@@ -320,19 +417,21 @@ impl eframe::App for DedupeForgeApp {
             .resizable(true)
             .default_width(340.0)
             .show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.heading("Scan Setup");
                 ui.add_space(8.0);
 
-                let profile = &mut self.controller.state_mut().profile;
+                {
+                    let profile = &mut self.controller.state_mut().profile;
 
-                ui.label("Profile Name");
-                ui.text_edit_singleline(&mut profile.name);
+                    ui.label("Profile Name");
+                    ui.text_edit_singleline(&mut profile.name);
 
-                ui.add_space(8.0);
-                ui.label("Scan Mode");
-                egui::ComboBox::from_id_salt("scan_mode")
-                    .selected_text(scan_mode_label(profile.mode))
-                    .show_ui(ui, |ui| {
+                    ui.add_space(8.0);
+                    ui.label("Scan Mode");
+                    egui::ComboBox::from_id_salt("scan_mode")
+                        .selected_text(scan_mode_label(profile.mode))
+                        .show_ui(ui, |ui| {
                         ui.selectable_value(&mut profile.mode, ScanMode::Exact, "Exact duplicates");
                         ui.selectable_value(
                             &mut profile.mode,
@@ -394,10 +493,19 @@ impl eframe::App for DedupeForgeApp {
                             ScanMode::EmptyArchives,
                             "Empty archives",
                         );
-                    });
+                        });
+                }
 
                 ui.add_space(8.0);
                 ui.label("Source Paths");
+                ui.horizontal(|ui| {
+                    if ui.button("Add Folder").clicked() {
+                        self.browse_source_folder();
+                    }
+                    if ui.button("Clear").clicked() {
+                        self.paths_text.clear();
+                    }
+                });
                 ui.add(
                     egui::TextEdit::multiline(&mut self.paths_text)
                         .desired_rows(4)
@@ -405,6 +513,14 @@ impl eframe::App for DedupeForgeApp {
                 );
 
                 ui.label("Protected Paths");
+                ui.horizontal(|ui| {
+                    if ui.button("Add Folder").clicked() {
+                        self.browse_protected_folder();
+                    }
+                    if ui.button("Clear").clicked() {
+                        self.protected_text.clear();
+                    }
+                });
                 ui.add(
                     egui::TextEdit::multiline(&mut self.protected_text)
                         .desired_rows(3)
@@ -418,11 +534,19 @@ impl eframe::App for DedupeForgeApp {
                         .hint_text("Examples: *.tmp\nThumbs.db"),
                 );
 
-                ui.checkbox(&mut profile.ignore_hidden, "Ignore hidden files");
-                ui.checkbox(&mut profile.byte_verify, "Byte verify exact matches");
+                    let profile = &mut self.controller.state_mut().profile;
+                    ui.checkbox(&mut profile.ignore_hidden, "Ignore hidden files");
+                    ui.checkbox(&mut profile.byte_verify, "Byte verify exact matches");
+                    ui.checkbox(
+                        &mut self.keep_cache_between_scans,
+                        "Keep hash cache database between scans",
+                    );
+                    ui.small(
+                        "Reuses existing hashes when file path, size, and modified time still match.",
+                    );
 
-                ui.add_space(8.0);
-                ui.collapsing("Exact Scan Settings", |ui| {
+                    ui.add_space(8.0);
+                    ui.collapsing("Exact Scan Settings", |ui| {
                     ui.horizontal(|ui| {
                         ui.label("Hash");
                         egui::ComboBox::from_id_salt("hash_algorithm")
@@ -453,15 +577,14 @@ impl eframe::App for DedupeForgeApp {
                         egui::Slider::new(&mut profile.min_size, 0..=16_777_216)
                             .text("Minimum file size"),
                     );
-                    ui.checkbox(&mut profile.cache_enabled, "Enable cache");
                     ui.checkbox(&mut profile.scan_archives, "Scan zip archives");
-                    ui.label("Cache Path");
+                    ui.label("Hash Cache Database");
                     ui.text_edit_singleline(&mut self.cache_path_text);
-                    ui.add(
-                        egui::Slider::new(&mut profile.cache_mtime_tolerance_secs, 0..=10)
-                            .text("Cache mtime tolerance (secs)"),
-                    );
-                });
+                        ui.add(
+                            egui::Slider::new(&mut profile.cache_mtime_tolerance_secs, 0..=10)
+                                .text("Reuse tolerance for modified time (secs)"),
+                        );
+                    });
 
                 ui.collapsing("Similarity Settings", |ui| {
                     ui.add(
@@ -534,180 +657,220 @@ impl eframe::App for DedupeForgeApp {
                     ));
                 }
 
-                ui.separator();
-                ui.heading("Actions");
-                let exact_mode_actions = self.controller.state().profile.mode == ScanMode::Exact;
-                ui.horizontal(|ui| {
-                    ui.label("Keep Rule");
-                    egui::ComboBox::from_id_salt("selection_rule")
-                        .selected_text(selection_rule_label(self.selection_rule))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut self.selection_rule,
-                                SelectionRule::KeepSuggested,
-                                "Keep suggested",
-                            );
-                            ui.selectable_value(
-                                &mut self.selection_rule,
-                                SelectionRule::KeepNewest,
-                                "Keep newest",
-                            );
-                            ui.selectable_value(
-                                &mut self.selection_rule,
-                                SelectionRule::KeepOldest,
-                                "Keep oldest",
-                            );
+                    if self.active_workspace == WorkspaceTab::Review {
+                        ui.separator();
+                        ui.heading("Actions");
+                        let exact_mode_actions =
+                            self.controller.state().profile.mode == ScanMode::Exact;
+                        ui.horizontal(|ui| {
+                            ui.label("Keep Rule");
+                            egui::ComboBox::from_id_salt("selection_rule")
+                                .selected_text(selection_rule_label(self.selection_rule))
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut self.selection_rule,
+                                        SelectionRule::KeepSuggested,
+                                        "Keep suggested",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.selection_rule,
+                                        SelectionRule::KeepNewest,
+                                        "Keep newest",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.selection_rule,
+                                        SelectionRule::KeepOldest,
+                                        "Keep oldest",
+                                    );
+                                });
                         });
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Action Type");
-                    egui::ComboBox::from_id_salt("action_kind")
-                        .selected_text(action_kind_label(self.action_kind))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut self.action_kind,
-                                ActionKind::QuarantineMove,
-                                "Quarantine move",
-                            );
-                            ui.selectable_value(
-                                &mut self.action_kind,
-                                ActionKind::HardlinkReplace,
-                                "Hardlink replace",
-                            );
-                            ui.selectable_value(
-                                &mut self.action_kind,
-                                ActionKind::SymlinkReplace,
-                                "Symlink replace",
-                            );
+                        ui.horizontal(|ui| {
+                            ui.label("Action Type");
+                            egui::ComboBox::from_id_salt("action_kind")
+                                .selected_text(action_kind_label(self.action_kind))
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut self.action_kind,
+                                        ActionKind::QuarantineMove,
+                                        "Quarantine move",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.action_kind,
+                                        ActionKind::HardlinkReplace,
+                                        "Hardlink replace",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.action_kind,
+                                        ActionKind::SymlinkReplace,
+                                        "Symlink replace",
+                                    );
+                                });
                         });
-                });
-                if !exact_mode_actions {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(196, 110, 32),
-                        "Action plans and file replacement actions are only enabled for exact duplicate scans.",
-                    );
-                }
-                if ui
-                    .add_enabled(exact_mode_actions, egui::Button::new("Build Action Plan"))
-                    .clicked()
-                {
-                    self.build_action_plan();
-                }
-                ui.label("Quarantine Root");
-                ui.text_edit_singleline(&mut self.quarantine_root_text);
-                if ui
-                    .add_enabled(
-                        exact_mode_actions,
-                        egui::Button::new(execute_action_button_label(self.action_kind)),
-                    )
-                    .clicked()
-                {
-                    self.execute_action_plan();
-                }
-                ui.label("Manifest Path");
-                ui.text_edit_singleline(&mut self.manifest_path_text);
-                if ui.button("Restore Manifest").clicked() {
-                    self.restore_manifest();
-                }
-
-                ui.separator();
-                ui.heading("Session");
-                ui.label("Session File");
-                ui.text_edit_singleline(&mut self.session_path_text);
-                ui.horizontal(|ui| {
-                    if ui.button("Save Session").clicked() {
-                        self.save_session();
-                    }
-                    if ui.button("Load Session").clicked() {
-                        self.load_session();
-                    }
-                });
-
-                ui.add_space(8.0);
-                ui.heading("Reports");
-                ui.label("Report File");
-                ui.text_edit_singleline(&mut self.report_path_text);
-                let has_report = self.controller.state().last_report.is_some();
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(has_report, egui::Button::new("Export Report"))
-                        .clicked()
-                    {
-                        self.save_report();
-                    }
-                    if ui.button("Open Report").clicked() {
-                        self.load_report();
-                    }
-                });
-                ui.add_space(8.0);
-                ui.label("Report Database");
-                ui.text_edit_singleline(&mut self.report_db_path_text);
-                ui.horizontal(|ui| {
-                    ui.label("Stored Name");
-                    ui.text_edit_singleline(&mut self.report_db_name_text);
-                });
-                ui.horizontal(|ui| {
-                    if ui.button("Refresh DB").clicked() {
-                        self.refresh_report_db();
-                    }
-                    if ui
-                        .add_enabled(has_report, egui::Button::new("Store In DB"))
-                        .clicked()
-                    {
-                        self.store_report_in_db();
-                    }
-                    if ui
-                        .add_enabled(
-                            self.selected_report_db_id.is_some(),
-                            egui::Button::new("Open From DB"),
-                        )
-                        .clicked()
-                    {
-                        self.open_report_from_db();
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Saved Report Filter");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.report_db_filter_text)
-                            .hint_text("Filter by id, name, mode, or risk"),
-                    );
-                    if ui.button("Clear").clicked() {
-                        self.report_db_filter_text.clear();
-                    }
-                });
-                egui::ScrollArea::vertical()
-                    .max_height(180.0)
-                    .show(ui, |ui| {
-                        let visible_reports = filtered_report_entries(
-                            &self.controller.state().stored_reports,
-                            self.report_db_filter_text.as_str(),
-                        );
-                        if visible_reports.is_empty() {
-                            ui.label("No stored reports loaded yet.");
-                        } else {
-                            for report in visible_reports {
-                                let selected = self.selected_report_db_id == Some(report.id);
-                                if ui
-                                    .selectable_label(
-                                        selected,
-                                        format!(
-                                            "#{} | {} | {} | {} groups | files={} | {}",
-                                            report.id,
-                                            report.name,
-                                            report.mode,
-                                            report.group_count,
-                                            report.scanned_files,
-                                            report.risk
-                                        ),
-                                    )
-                                    .clicked()
-                                {
-                                    self.selected_report_db_id = Some(report.id);
-                                }
-                            }
+                        if !exact_mode_actions {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(196, 110, 32),
+                                "Action plans and file replacement actions are only enabled for exact duplicate scans.",
+                            );
                         }
-                    });
+                        if ui
+                            .add_enabled(exact_mode_actions, egui::Button::new("Build Action Plan"))
+                            .clicked()
+                        {
+                            self.build_action_plan();
+                        }
+                        ui.label("Quarantine Root");
+                        ui.horizontal(|ui| {
+                            ui.text_edit_singleline(&mut self.quarantine_root_text);
+                            if ui.button("Browse").clicked() {
+                                self.browse_quarantine_root();
+                            }
+                        });
+                        if ui
+                            .add_enabled(
+                                exact_mode_actions,
+                                egui::Button::new(execute_action_button_label(self.action_kind)),
+                            )
+                            .clicked()
+                        {
+                            self.execute_action_plan();
+                        }
+                        ui.label("Manifest Path");
+                        ui.horizontal(|ui| {
+                            ui.text_edit_singleline(&mut self.manifest_path_text);
+                            if ui.button("Browse").clicked() {
+                                self.browse_manifest_path();
+                            }
+                        });
+                        if ui.button("Restore Manifest").clicked() {
+                            self.restore_manifest();
+                        }
+
+                        ui.separator();
+                        ui.heading("Session");
+                        ui.label("Session File");
+                        ui.horizontal(|ui| {
+                            ui.text_edit_singleline(&mut self.session_path_text);
+                            if ui.button("Browse").clicked() {
+                                self.browse_session_path();
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            if ui.button("Save Session").clicked() {
+                                self.save_session();
+                            }
+                            if ui.button("Load Session").clicked() {
+                                self.load_session();
+                            }
+                        });
+
+                        ui.add_space(8.0);
+                        ui.heading("Reports");
+                        ui.label("Report File");
+                        ui.horizontal(|ui| {
+                            ui.text_edit_singleline(&mut self.report_path_text);
+                            if ui.button("Browse").clicked() {
+                                self.browse_report_open_path();
+                            }
+                        });
+                        let has_report = self.controller.state().last_report.is_some();
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(has_report, egui::Button::new("Export Report"))
+                                .clicked()
+                            {
+                                self.save_report();
+                            }
+                            if ui.button("Save As").clicked() {
+                                self.browse_report_path();
+                            }
+                            if ui.button("Open Report").clicked() {
+                                self.load_report();
+                            }
+                        });
+                        ui.add_space(8.0);
+                        ui.label("Report Database");
+                        ui.horizontal(|ui| {
+                            ui.text_edit_singleline(&mut self.report_db_path_text);
+                            if ui.button("Browse").clicked() {
+                                self.browse_report_db_path();
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Stored Name");
+                            ui.text_edit_singleline(&mut self.report_db_name_text);
+                        });
+                        ui.horizontal(|ui| {
+                            if ui.button("Refresh DB").clicked() {
+                                self.refresh_report_db();
+                            }
+                            if ui
+                                .add_enabled(has_report, egui::Button::new("Store In DB"))
+                                .clicked()
+                            {
+                                self.store_report_in_db();
+                            }
+                            if ui
+                                .add_enabled(
+                                    self.selected_report_db_id.is_some(),
+                                    egui::Button::new("Open From DB"),
+                                )
+                                .clicked()
+                            {
+                                self.open_report_from_db();
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Saved Report Filter");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.report_db_filter_text)
+                                    .hint_text("Filter by id, name, mode, or risk"),
+                            );
+                            if ui.button("Clear").clicked() {
+                                self.report_db_filter_text.clear();
+                            }
+                        });
+                        egui::ScrollArea::vertical()
+                            .max_height(180.0)
+                            .show(ui, |ui| {
+                                let visible_reports = filtered_report_entries(
+                                    &self.controller.state().stored_reports,
+                                    self.report_db_filter_text.as_str(),
+                                );
+                                if visible_reports.is_empty() {
+                                    ui.label("No stored reports loaded yet.");
+                                } else {
+                                    for report in visible_reports {
+                                        let selected = self.selected_report_db_id == Some(report.id);
+                                        if ui
+                                            .selectable_label(
+                                                selected,
+                                                format!(
+                                                    "#{} | {} | {} | {} groups | files={} | {}",
+                                                    report.id,
+                                                    report.name,
+                                                    report.mode,
+                                                    report.group_count,
+                                                    report.scanned_files,
+                                                    report.risk
+                                                ),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.selected_report_db_id = Some(report.id);
+                                        }
+                                    }
+                                }
+                            });
+                    } else {
+                        ui.separator();
+                        ui.heading("Review Workspace");
+                        if self.controller.state().last_report.is_some() {
+                            ui.label("Run a scan, then switch here to review results, build action plans, and work with reports.");
+                        } else {
+                            ui.label("This workspace activates after a scan completes or when you open a saved report.");
+                        }
+                    }
+                });
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
