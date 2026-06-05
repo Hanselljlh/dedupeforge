@@ -1,119 +1,90 @@
 # Safety model
 
-DedupeForge should prioritize safe review over aggressive cleanup.
+DedupeForge is review-first. Scans are read-only; cleanup requires explicit action plans and validation.
 
-## Core invariants
+## Current scan safety
 
-1. Scanning never modifies files.
-2. A duplicate group must always retain at least one file.
-3. Protected/reference folders cannot be modified by automatic actions.
-4. Destructive actions require an explicit action plan.
-5. Every action batch must produce a log.
-6. Move-to-quarantine should be implemented before permanent delete.
-7. Undo support should exist before broad action features are enabled.
+- Scanning never modifies files.
+- Exact duplicate groups require same size and same full hash.
+- Optional byte verification can confirm exact matches byte-for-byte.
+- Protected/reference paths are marked during collection.
+- Protected files are preferred as keep candidates.
+- Every group gets exactly one suggested keep item.
+- Zero-byte files are excluded from exact scans by default through `--min-size 1`.
+- Similarity and hygiene modes include report-level risk labels.
 
-## Current MVP safety
+## Current action safety
 
-The current CLI has no destructive actions.
+Actions are implemented, but only through explicit exact-mode action plans.
 
-It only reports duplicate groups and suggested keep items.
+Implemented action behavior:
 
-## Protected folders
+- dry-run action plan generation
+- saved and loaded action plans
+- validation of loaded plans against the current filesystem
+- quarantine move
+- hard-link replacement, opt-in
+- symlink replacement, opt-in
+- undo manifest writing
+- action log writing
+- restore from manifest
+- execution-time hash revalidation before moving/replacing files
 
-Protected folders represent source-of-truth or archive locations.
+Hard safety rules:
 
-Expected behavior:
+- action plans are supported only for exact-mode scan reports
+- protected items are skipped by the planner
+- the planner rejects selecting every file in a duplicate group
+- execution revalidates file availability, size, and full hash
+- advanced link actions quarantine the original duplicate first so restore remains possible
+- hard-link replacement validates same-filesystem requirements
+- symlink replacement validates symlink support
 
-- protected files can be scanned
-- protected files can participate in duplicate groups
-- protected files are preferred as keep items
-- protected files cannot be selected by auto-delete rules
-- protected files should be visibly marked in the UI
+## Suggested keep behavior
 
-## Suggested keep logic
+Scan default:
 
-Current MVP rule:
+- protected file first, if present
+- otherwise the first item after stable sorting by modified time, path depth, and path text
 
-1. keep the first protected file if one exists
-2. otherwise keep the first sorted file
+Action planner rules:
 
-Future rules may include:
+- `keep-suggested`
+- `keep-newest`
+- `keep-oldest`
 
-- prefer newest
-- prefer oldest
-- prefer shortest path
-- prefer longest path
-- prefer largest dimensions for images
-- prefer lossless over lossy
-- prefer RAW over JPEG
-- prefer specific root path
-- prefer file with richer metadata
+GUI behavior:
 
-Every rule must be explainable.
+- exact-mode reports can override the suggested keep item before building an action plan
 
-## Action plan
+## Non-exact results
 
-Before modifying files, DedupeForge should generate an action plan.
+Similarity and hygiene modes are review workflows. Current action planning rejects non-exact reports, including:
 
-An action plan should include:
+- similar names
+- similar images
+- RAW + JPEG pairs
+- similar video/audio
+- duplicate folders
+- empty files/folders
+- large files
+- bad extensions
+- archive hygiene modes
 
-- source file
-- destination or action
-- group ID
-- match reason
-- selected rule
-- protected status
-- expected file size
-- expected hash if available
+This keeps fuzzy and hygiene results from becoming destructive automatically.
 
-## Quarantine
+## Archive safety
 
-Quarantine should be the first cleanup action.
+- ZIP archive member results are pseudo-items.
+- Archive member pseudo-items are treated as protected/non-actionable review entries.
+- ZIP support is current; broader archive formats and resource-limit hardening remain planned.
 
-Recommended behavior:
+## Known safety gaps to improve
 
-```text
-.quarantine/
-  2026-05-17T06-00-00Z/
-    manifest.json
-    files/
-      <safe encoded original path>
-```
+These are known code-review findings and should be addressed before broadening destructive workflows:
 
-The manifest should map original paths to quarantine paths.
-
-## Undo manifest
-
-The undo manifest should include enough information to restore files.
-
-Fields:
-
-- action batch ID
-- timestamp
-- original path
-- quarantine path
-- file size
-- hash
-- action status
-- errors
-
-## Delete behavior
-
-Permanent delete should not be part of the early releases.
-
-When added, it should be advanced-only and disabled by default.
-
-Recycle Bin/trash behavior is platform-dependent and unreliable on some network mounts, so the application must not assume that delete is reversible.
-
-## Hard links and symlinks
-
-Hard link and symlink replacement are advanced features.
-
-Risks:
-
-- hard links require filesystem support
-- hard links usually require same filesystem/partition
-- symlinks can break when folders are moved
-- applications may behave differently with links than with normal files
-
-These actions should require explicit opt-in.
+- quarantine destination names are lossy sanitized paths and can collide
+- restore for link actions should verify the existing replacement is the link DedupeForge created before removing it
+- archive member scanning should add resource limits for huge files and zip bombs
+- FFmpeg/ffprobe calls should have timeouts
+- non-exact modes should stay review-only until their false-positive behavior is better constrained

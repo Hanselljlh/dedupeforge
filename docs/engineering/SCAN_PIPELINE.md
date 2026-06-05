@@ -1,92 +1,86 @@
 # Scan pipeline
 
-The exact duplicate pipeline is intentionally conservative.
+This document describes the current scan pipeline on `main`.
 
-```text
-Input paths
-  ↓
-Recursive walk
-  ↓
-Metadata collection
-  ↓
-Filter by min size / hidden files
-  ↓
-Group by file size
-  ↓
-Discard unique sizes
-  ↓
-Partial hash likely candidates
-  ↓
-Discard unique partial hashes
-  ↓
-Full hash remaining candidates
-  ↓
-Optional byte-by-byte verification
-  ↓
-Create duplicate groups
-  ↓
-Choose suggested keep item
-  ↓
-Emit report
-```
+## Exact duplicate pipeline
 
-## Why group by size first
+1. **Collect files**
+   - Walk one or more input roots.
+   - Ignore hidden files when configured.
+   - Mark files under protected roots.
+   - Capture size, modified time, and platform file identity when available.
 
-Two files cannot be exact duplicates if their sizes differ. Grouping by size avoids unnecessary hashing.
+2. **Filter by minimum size**
+   - Default `--min-size` is `1`, so zero-byte files are excluded from exact scans by default.
+   - Use `--min-size 0` or `--mode empty-files` when zero-byte review is desired.
 
-## Why partial hash first
+3. **Group by size**
+   - Only same-size groups with two or more files continue.
 
-Partial hashing reduces full-file reads. This is useful on large datasets and network storage.
+4. **Partial hash prefilter**
+   - Hash the configured prefix length with BLAKE3, XXH3-128, or SHA-256.
+   - Cache partial hashes when cache is enabled.
 
-A partial hash is not enough to declare duplicates. It only narrows candidates.
+5. **Full hash confirmation**
+   - Fully hash remaining candidates.
+   - Cache full hashes when cache is enabled.
 
-## Why full hash second
+6. **Optional byte verification**
+   - If `--byte-verify` is enabled, split same-hash groups by byte-for-byte equality.
 
-A full content hash is the main exact duplicate test.
+7. **Build report**
+   - Sort groups by size.
+   - Suggest one keep item per group, preferring protected files.
+   - Return errors collected during file walking or verification.
 
-Current choices:
+8. **Optional ZIP member scan**
+   - If `--scan-archives` is enabled, scan `.zip` members and append duplicate member groups.
+   - Archive member pseudo-items are treated as protected/non-actionable review entries.
 
-- BLAKE3
-- XXH3 128-bit
-- SHA-256
+## Similar and hygiene mode pipeline
 
-## Why byte verification is optional
+Most non-exact modes use the shared file collection and report model, then apply mode-specific grouping:
 
-Byte-by-byte verification gives the strongest final confirmation but requires another full read of matching files. It is useful before destructive actions or when using non-cryptographic hashes.
+- `similar-names` — normalized names, token overlap, and edit distance.
+- `similar-images` — image average hashes, EXIF date reasons, RAW+JPEG pair checks.
+- `raw-jpeg-pairs` — normalized basename RAW/JPEG companion matching.
+- `similar-videos` — FFmpeg/ffprobe sampled frame fingerprints and duration tolerance.
+- `similar-audio` — FFmpeg/ffprobe sampled audio fingerprints, duration tolerance, and metadata reasons.
+- `duplicate-folders` — folder signatures with ignored file patterns.
+- `empty-files` — zero-byte file review.
+- `empty-folders` — empty directory review.
+- `large-files` — files at or above the configured `--min-size`.
+- `bad-extensions` — common magic-number/content-extension mismatch review.
+- `duplicate-archive-members` — duplicate file members across `.zip` archives.
+- `empty-archives` — `.zip` archives with no file members.
 
-## Candidate group reason strings
+## Cache pipeline
 
-Every result group should include a reason.
+The SQLite cache is current, not future. The CLI allows cache options for these modes:
 
-Examples:
+- `exact`
+- `similar-images`
+- `similar-videos`
+- `similar-audio`
 
-```text
-same size + same full hash
-same size + same full hash + byte-by-byte verified
-similar image perceptual hash distance <= 8
-same duration + matching sampled video frame hashes
-```
+Cache keys include:
 
-## Future cache pipeline
+- canonical path
+- optional file identity `(device_id, inode)`
+- size
+- modified time
+- algorithm/fingerprint label
+- hash scope (`partial` or `full`)
+- bytes hashed for partial hashes
 
-With SQLite cache:
+Cache lookup validates size and modified time, with optional mtime tolerance for network/NAS presets.
 
-```text
-Input paths
-  ↓
-Recursive walk
-  ↓
-File identity lookup
-  ↓
-Reuse valid cached hashes
-  ↓
-Hash only new/changed files
-  ↓
-Run grouping/matching
-  ↓
-Update cache
-  ↓
-Emit report
-```
+## Progress and cancellation
 
-Cache entries should be invalidated when size, modified time, or file identity changes.
+The core exposes progress events and a cancellation token. The GUI uses these for progress/cancel controls.
+
+Known limitation: cancellation is checked between major phases and during result collection, but long-running Rayon hash work or FFmpeg/ffprobe calls may not stop immediately.
+
+## Archive limitations
+
+Current archive support is ZIP-only. Resource-limit hardening for very large archives, zip bombs, and additional formats such as 7z/rar/tar remains planned.
