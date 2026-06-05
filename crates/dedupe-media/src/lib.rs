@@ -6,11 +6,14 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImageAnalysis {
     pub perceptual_hash_hex: String,
+    pub perceptual_hashes_hex: Vec<String>,
     pub exif_date: Option<String>,
     pub transform_count: usize,
 }
@@ -83,10 +86,12 @@ pub fn analyze_image(
     let image =
         image::open(path).with_context(|| format!("failed to decode image {}", path.display()))?;
     let hashes = perceptual_hash_variants(&image, hash_size, rotation_invariant);
-    let perceptual_hash_hex = hashes.first().map(hex::encode).unwrap_or_default();
+    let perceptual_hashes_hex = hashes.iter().map(hex::encode).collect::<Vec<_>>();
+    let perceptual_hash_hex = perceptual_hashes_hex.first().cloned().unwrap_or_default();
 
     Ok(ImageAnalysis {
         perceptual_hash_hex,
+        perceptual_hashes_hex,
         exif_date: read_exif_date(path).ok().flatten(),
         transform_count: hashes.len(),
     })
@@ -219,7 +224,8 @@ pub fn analyze_audio(path: &Path, config: &MediaToolConfig) -> Result<AudioAnaly
 
 pub fn probe_metadata(path: &Path, config: &MediaToolConfig) -> Result<ProbeMetadata> {
     media_tools_available(config)?;
-    let output = Command::new(&config.ffprobe_bin)
+    let mut command = Command::new(&config.ffprobe_bin);
+    command
         .args([
             "-v",
             "error",
@@ -228,8 +234,8 @@ pub fn probe_metadata(path: &Path, config: &MediaToolConfig) -> Result<ProbeMeta
             "-of",
             "default=noprint_wrappers=1:nokey=0",
         ])
-        .arg(path)
-        .output()
+        .arg(path);
+    let output = command_output_with_timeout(command, Duration::from_secs(20))
         .with_context(|| format!("failed to execute {}", config.ffprobe_bin))?;
     if !output.status.success() {
         anyhow::bail!(
@@ -246,9 +252,9 @@ pub fn probe_metadata(path: &Path, config: &MediaToolConfig) -> Result<ProbeMeta
 }
 
 fn fingerprint_media(path: &Path, config: &MediaToolConfig, args: &[&str]) -> Result<String> {
-    let output = Command::new(&config.ffmpeg_bin)
-        .args(args)
-        .output()
+    let mut command = Command::new(&config.ffmpeg_bin);
+    command.args(args);
+    let output = command_output_with_timeout(command, Duration::from_secs(30))
         .with_context(|| format!("failed to execute {}", config.ffmpeg_bin))?;
     if !output.status.success() {
         anyhow::bail!(
@@ -262,12 +268,32 @@ fn fingerprint_media(path: &Path, config: &MediaToolConfig, args: &[&str]) -> Re
     Ok(blake3::hash(&output.stdout).to_hex().to_string())
 }
 
+fn command_output_with_timeout(mut command: Command, timeout: Duration) -> Result<Output> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let start = Instant::now();
+
+    loop {
+        if child.try_wait()?.is_some() {
+            return Ok(child.wait_with_output()?);
+        }
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!("command timed out after {} seconds", timeout.as_secs());
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
 fn tool_available(tool: &str) -> Result<()> {
-    let status = Command::new(tool)
-        .arg("-version")
-        .status()
+    let mut command = Command::new(tool);
+    command.arg("-version");
+    let output = command_output_with_timeout(command, Duration::from_secs(10))
         .with_context(|| format!("failed to launch {}", tool))?;
-    if status.success() {
+    if output.status.success() {
         Ok(())
     } else {
         anyhow::bail!("{} returned a non-zero status", tool);
@@ -477,6 +503,7 @@ mod tests {
 
         let analysis = analyze_image(&file, 8, true).unwrap();
         assert!(!analysis.perceptual_hash_hex.is_empty());
+        assert_eq!(analysis.perceptual_hashes_hex[0], analysis.perceptual_hash_hex);
         assert!(analysis.transform_count >= 1);
 
         let _ = fs::remove_dir_all(root);
