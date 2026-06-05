@@ -37,11 +37,11 @@ Large media and backup collections need all three:
 4. **Separate scan from action.** Scanning should not modify files.
 5. **Keep the engine independent.** CLI and GUI should call the same core backend.
 6. **Cache aggressively but verify safely.** Use metadata and hashes to speed rescans, but invalidate cache when file metadata changes.
-7. **Make automation possible.** JSON/CSV output and future action manifests should support scripts.
+7. **Make automation possible.** JSON/CSV output, saved action plans, report databases, and manifests should support scripts.
 
-## MVP scope
+## MVP scope — completed
 
-The first usable release should include:
+The first usable release scope included:
 
 - exact duplicate scan
 - fast hash options
@@ -49,17 +49,36 @@ The first usable release should include:
 - result grouping
 - suggested keep file
 - export to JSON and CSV
-- no destructive actions
+- scan-only operation by default
 
-## First production-grade target
+## First production-grade target — implemented in first-pass form
 
-The first production-grade release should include:
+The first production-grade target included:
 
 - SQLite cache
 - dry-run action plan
 - quarantine move action
 - undo manifest
 - GUI result review screen
-- exact duplicates only
+- exact-duplicates action planning
 
-Similar images, videos, music, and duplicate folders should come after the action model is safe.
+## Current implemented expansion
+
+The current `main` branch also includes first-pass implementations for:
+
+- similar images, videos, music/audio, names, and folders
+- RAW + JPEG companion review
+- empty file/folder review
+- large-file and bad-extension review
+- ZIP archive-member and empty-archive review
+- hard-link and symlink replacement actions for exact-mode plans
+- report database workflows for CLI and GUI
+
+## Current known gaps
+
+- broken-file review mode
+- hard-link finder scan mode
+- archive support beyond ZIP
+- true rotation/flip-aware image grouping
+- stronger perceptual video/audio fingerprinting
+- broader safety hardening around archive resource limits and link-action restore verification

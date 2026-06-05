@@ -1,32 +1,41 @@
 # Feature matrix
 
-This matrix describes the desired combined behavior. It is not a claim that all features are implemented.
+This matrix describes the current `main` branch after a source review. “Implemented” means the code path exists and is covered by the current CLI and/or GUI; notes call out important limitations.
 
-| Area | MVP | Planned | Notes |
-|---|---:|---:|---|
-| Exact duplicate scan | Yes | Yes | same size plus full hash |
-| Partial hash prefilter | Yes | Yes | reduces unnecessary full reads |
-| Fast hash choices | Yes | Yes | BLAKE3 and XXH3 currently available |
-| Cryptographic hash | Yes | Yes | SHA-256 currently available |
-| Byte-by-byte verification | Yes | Yes | optional final confirmation |
-| Protected/reference folders | Yes | Yes | protected files preferred as keep items |
-| JSON/CSV export | Yes | Yes | useful for automation |
-| SQLite cache | No | Yes | needed for large repeated scans |
-| Quarantine action | No | Yes | first safe action to implement |
-| Undo manifest | No | Yes | required before destructive workflows |
-| Hard link replacement | No | Yes | local filesystem limitations apply |
-| Symlink replacement | No | Yes | dangerous if misunderstood; should be advanced only |
-| Filename similarity | No | Yes | token and string similarity methods |
-| Similar images | No | Yes | perceptual hashes, rotation-aware options later |
-| RAW + JPEG pairing | No | Yes | useful for photo workflows |
-| Similar videos | No | Yes | FFmpeg frame hashing |
-| Similar music | No | Yes | metadata plus audio fingerprinting |
-| Duplicate folders | No | Yes | compare folder trees by policy |
-| Archive scanning | No | Yes | zip/7z/rar later, likely optional |
-| GUI | No | Yes | should call the same backend |
-| CLI automation | Partial | Yes | future command set should support action manifests |
+| Area | Current status | Notes |
+|---|---|---|
+| Exact duplicate scan | Implemented | Same size plus full hash; optional byte verification. |
+| Partial hash prefilter | Implemented | Reduces unnecessary full reads before full hashing. |
+| Fast hash choices | Implemented | BLAKE3 and XXH3-128. |
+| Cryptographic hash | Implemented | SHA-256. |
+| Byte-by-byte verification | Implemented | Optional final confirmation. |
+| Protected/reference folders | Implemented | Protected files are preferred as keep items. |
+| Human/JSON/CSV export | Implemented | Reports support all three formats. |
+| SQLite cache | Implemented | Used by exact scans and image/video/audio fingerprint reuse. |
+| Scan profiles and presets | Implemented | JSON profiles plus default/network/NAS presets. |
+| Quarantine action | Implemented | Exact-mode action plans only. |
+| Undo manifest / restore | Implemented | Quarantine batches write manifests and logs; restore reads manifest. |
+| Saved action plans | Implemented | Plans can be saved, loaded, validated, and executed. |
+| Hard-link replacement | Implemented | Advanced opt-in action; validates same-filesystem requirement. |
+| Symlink replacement | Implemented | Advanced opt-in action; validates symlink support. |
+| Filename similarity | Implemented | Token and edit-distance based, high false-positive risk. |
+| Similar images | Implemented, first pass | Perceptual average hash plus EXIF reason support; true rotation/flip-aware grouping remains a known gap. |
+| RAW + JPEG pairing | Implemented | Explicit mode and integrated image-pair reasoning by normalized basename. |
+| Similar videos | Implemented, first pass | FFmpeg/ffprobe sampled-frame fingerprint plus duration threshold; not a robust perceptual video fingerprint. |
+| Similar music/audio | Implemented, first pass | FFmpeg/ffprobe audio sample fingerprint plus duration and metadata reasons; not a robust acoustic fingerprint. |
+| Duplicate folders | Implemented, first pass | File-tree overlap based on names/sizes and ignore patterns; not full recursive content-hash equivalence. |
+| Empty files | Implemented | Low-risk review mode. |
+| Empty folders | Implemented | Low-risk review mode. |
+| Large files | Implemented | Low-risk review mode controlled by `--min-size`. |
+| Bad extensions | Implemented | Medium-risk mode using a small magic-number detector. |
+| Duplicate archive members | Implemented for ZIP | Reports duplicate members across `.zip` archives; archive pseudo-items are non-actionable. |
+| Empty archives | Implemented for ZIP | Finds `.zip` archives with no file members. |
+| Archive scanning in exact mode | Implemented for ZIP | `--scan-archives` adds duplicate ZIP-member reporting to exact scans. |
+| Report database | Implemented | SQLite storage/list/load of scan reports for CLI and GUI workflows. |
+| GUI | Implemented prototype | `egui`/`eframe` desktop app with scan setup, review, previews, actions, and report DB workflows. |
+| CLI automation | Implemented, first pass | JSON/CSV reports, saved action plans, report DB storage, and non-interactive commands. |
 
-## Comparison modes to support eventually
+## Comparison modes currently supported
 
 ### Exact file content
 
@@ -35,54 +44,69 @@ This matrix describes the desired combined behavior. It is not a claim that all 
 - same full hash
 - optional byte verification
 
-### File properties
+### File properties / hygiene
 
-- name
-- extension
-- size
-- created date
-- modified date
-- attributes
-- hard link identity
+- empty files
+- empty folders
+- large files above a threshold
+- extension/content mismatch for common formats
 
 ### Similar names
 
-- exact filename
-- filename without extension
 - normalized filename
-- token/word overlap
-- Levenshtein distance
-- Ratcliff-Obershelp style similarity
-- ignored punctuation/brackets/date patterns
+- token overlap
+- Levenshtein-style edit distance
+- ignored punctuation through normalization
 
 ### Similar images
 
-- exact binary duplicate
-- same pixels but different metadata
-- perceptual hash match
-- rotation/flip-aware match
-- resized/recompressed match
-- RAW + JPEG pair detection
+- perceptual average hash
+- configurable hash size
+- Hamming distance threshold
+- EXIF date in match reasons
+- RAW + JPEG pair detection by normalized basename
+
+Known limitation: `--image-rotation-invariant` is exposed, but scan grouping does not yet compare every generated rotation/flip variant.
 
 ### Similar video
 
-- same duration
-- near-same duration
-- sampled frame perceptual hashes
-- resolution/codec ignored
-- optional audio track comparison
+- FFmpeg/ffprobe dependency detection
+- duration tolerance
+- sampled frame fingerprint comparison
+- cache-backed fingerprints
+
+Known limitation: fingerprints are cryptographic hashes of sampled output, so small media changes may avalanche rather than behave like a perceptual fingerprint.
 
 ### Similar music/audio
 
-- same file content
-- same metadata tags
-- similar tags
-- same duration
-- audio fingerprint match
+- FFmpeg/ffprobe dependency detection
+- duration tolerance
+- sampled audio fingerprint comparison
+- optional metadata basis in reasons
+- cache-backed fingerprints
+
+Known limitation: this is not a mature acoustic fingerprinting engine.
 
 ### Duplicate folders
 
-- same filenames
-- same sizes
-- same content hashes
-- same tree after ignores
+- file tree overlap
+- filename and size signatures
+- ignored file patterns
+
+Known limitation: this is a first-pass folder similarity engine, not a full recursive content-hash folder equivalence engine.
+
+### Archives
+
+- ZIP archive member duplicate review
+- ZIP empty archive review
+- ZIP member scanning from exact mode
+
+Known limitation: 7z/rar/tar and zip-bomb/resource-limit hardening are not implemented yet.
+
+## Still planned / not implemented
+
+- broken-file review mode
+- hard-link finder scan mode
+- broad archive formats beyond ZIP
+- true rotation/flip-aware image grouping
+- richer video/audio previews and mature perceptual media fingerprints

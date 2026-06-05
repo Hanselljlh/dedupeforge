@@ -1,66 +1,124 @@
 # Development plan
 
-## Immediate next tasks
+Current `main` status: DedupeForge has implemented the original scanner, cache, action, GUI, similarity, hygiene, archive, and report-database roadmap in first-pass form. The next work should focus on correctness, documentation, polish, and tightening safety gaps found during code review.
 
-1. Add tests for current exact duplicate scanner.
-2. Add fixture generator for test files.
-3. Add stable JSON schema for scan reports.
-4. Add SQLite cache crate.
-5. Add dry-run action plan crate.
-6. Add quarantine move action and undo manifest.
-7. Only then begin GUI prototype.
+## Completed milestones
 
-## Suggested GitHub milestones
+### repo-foundation
 
-### Milestone: repo-foundation
+- documentation scaffold
+- CI workflow
+- license files
+- issue templates
+- contribution guide
 
-- documentation complete
-- CI enabled
-- license files added
-- issue templates added
-
-### Milestone: exact-scan-mvp
+### exact-scan-mvp
 
 - exact scan works
-- tests pass
-- JSON/CSV output documented
-- no destructive actions
+- tests exist for grouping, keep selection, outputs, unreadable files, and zero-byte behavior
+- JSON/CSV/human output is available
+- scans are read-only
 
-### Milestone: cache-v1
+### cache-v1
 
-- SQLite cache exists
-- repeated scan reuses valid hashes
-- cache invalidation tested
+- SQLite cache crate exists
+- partial and full hashes can be reused
+- image/video/audio fingerprints can be cached
+- cache invalidation checks size and modified time
+- identity-based reuse is supported when available
 
-### Milestone: action-plan-v1
+### action-plan-v1 / quarantine-v1
 
-- action planner exists
-- dry-run plan exists
+- dry-run action planner exists
 - validation rejects unsafe plans
-
-### Milestone: quarantine-v1
-
-- quarantine move action exists
-- undo manifest exists
+- quarantine move exists
+- undo manifest and action log exist
 - restore command exists
+- saved/loaded action plans exist
+- hard-link and symlink replacement actions exist as opt-in advanced actions
 
-### Milestone: gui-prototype
+### gui-prototype
 
-- GUI can select folders
-- GUI can run exact scan
-- GUI can review groups
-- GUI can export report
+- GUI can select folders and configure scans
+- GUI can run scans with progress/cancel controls
+- GUI can review grouped results
+- GUI can filter/prune groups and override keep items
+- GUI can build and execute exact-mode action plans
+- GUI can export/import reports
+- GUI can browse report database entries
 
-## Development order
+### match-engine expansion
 
-Do not start with similar images or video.
+- similar names
+- similar images
+- RAW + JPEG pairs
+- similar videos
+- similar audio
+- duplicate folders
+- empty files/folders
+- large files
+- bad extensions
+- duplicate ZIP archive members
+- empty ZIP archives
 
-The safe order is:
+### release packaging
 
-1. exact scan correctness
-2. cache correctness
-3. action safety
-4. GUI review
-5. similar matching engines
+- Windows release packaging script exists
+- `v0.1.0` release includes Windows CLI and GUI assets
 
-The reason is simple: similar matching creates false positives. The project should have strong review and action safety before introducing fuzzy results.
+## Current priority backlog
+
+1. **Fix PR #18 CI before merge**
+   - PR #18 is draft/open and currently fails Clippy in CI.
+   - Do not document its scan-setup/review-workspace UX as merged until CI passes and it lands.
+
+2. **Close or refresh stale PR #1**
+   - PR #1 is draft/open and conflicted.
+   - Phase 1 functionality appears represented on `main`, so the PR should be reconciled or closed.
+
+3. **Rotation-aware image correctness**
+   - `--image-rotation-invariant` is exposed, but scan grouping does not yet compare all generated variants.
+   - Either implement true variant comparison or rename/remove the flag.
+
+4. **Quarantine filename collision safety**
+   - Current quarantine destination names are lossy sanitized paths and can collide.
+   - Use unique IDs, hashes, or manifest-safe paths to prevent overwrites.
+
+5. **Restore verification for link actions**
+   - Before removing an existing path during restore, verify it is the link DedupeForge created.
+
+6. **Archive safety and format support**
+   - Add resource limits for ZIP members.
+   - Avoid reading huge archive members into memory where possible.
+   - Add 7z/rar/tar support only after safety limits are defined.
+
+7. **Media fingerprint quality**
+   - Replace sampled-output cryptographic hashes with stronger perceptual video and acoustic fingerprints.
+   - Add FFmpeg/ffprobe timeouts.
+
+8. **Ignore pattern consistency**
+   - `--ignore-pattern` is accepted globally but only applies to duplicate-folder signatures today.
+   - Decide whether to apply it to all file-collection modes or document it as duplicate-folder-only.
+
+9. **Report DB schema polish**
+   - Add schema versioning/migrations.
+   - Store scan mode labels in CLI/doc kebab-case instead of debug-lowercase forms.
+
+10. **Additional planned modes**
+    - broken-file review mode
+    - hard-link finder scan mode
+    - richer video/audio previews
+    - full recursive content-hash folder comparison
+
+## Verification expectation
+
+Before merging future code changes:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo build --workspace
+```
+
+This environment did not have `cargo` installed during the documentation refresh, so local Rust verification must run on a Rust-enabled machine or through GitHub Actions.

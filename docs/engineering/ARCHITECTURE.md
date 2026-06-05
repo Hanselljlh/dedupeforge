@@ -3,132 +3,157 @@
 DedupeForge is built as a reusable backend with multiple frontends and supporting crates.
 
 ```text
-                +----------------------+
-                |      dedupe-gui      |
-                |   desktop frontend   |
-                +----------+-----------+
-                           |
-                +----------v-----------+
-                |      dedupe-cli      |
-                |     CLI frontend     |
-                +----------+-----------+
-                           |
-                +----------v-----------+
-                |     dedupe-core      |
-                | scan/group/hash/report|
-                +----+-----------+-----+
-                     |           |
-        +------------+---+   +---+-------------+
-        |                |   |                 |
-+-------v--------+ +-----v-------+ +-----------v------+
+                  +----------------------+
+                  |      dedupe-gui      |
+                  |   desktop frontend   |
+                  +----------+-----------+
+                             |
+                  +----------v-----------+
+                  |     GUI controller   |
+                  | session/review state |
+                  +----------+-----------+
+                             |
++----------------------------+----------------------------+
+|                                                         |
+|                +----------------------+                 |
+|                |      dedupe-cli      |                 |
+|                |     CLI frontend     |                 |
+|                +----------+-----------+                 |
+|                           |                             |
++---------------------------v-----------------------------+
+                            |
+                 +----------v-----------+
+                 |     dedupe-core      |
+                 | scan/group/hash/report|
+                 +----+-----------+-----+
+                      |           |
+         +------------+---+   +---+-------------+
+         |                |   |                 |
++--------v-------+ +------v------+ +------------v-----+
 |  dedupe-cache  | | dedupe-actions| |  dedupe-media   |
 | SQLite hashes  | | safe actions  | | media matching  |
-+----------------+ +---------------+ +-----------------+
-                           |
-                +----------v-----------+
-                |   dedupe-report-db   |
-                |  stored scan reports |
-                +----------------------+
++----------------+ +------+-------+ +------------------+
+                          |
+                 +--------v-------------+
+                 |   dedupe-report-db   |
+                 |  stored scan reports |
+                 +----------------------+
 ```
 
-## Current design
+## Current active crates
 
-The current prototype workspace has multiple active crates:
-
-- `dedupe-core`: backend scan, grouping, hashing, and report engine
-- `dedupe-cli`: CLI frontend and report/action-plan entrypoint
+- `dedupe-core`: backend scan, grouping, hashing, progress, and report engine
+- `dedupe-cli`: CLI frontend and report/action/cache/report-db entrypoint
 - `dedupe-cache`: SQLite-backed reusable hash and fingerprint cache
 - `dedupe-actions`: dry-run planning, quarantine execution, restore, and advanced link actions
 - `dedupe-media`: image, video, and audio similarity helpers
 - `dedupe-report-db`: stored scan report database
 - `dedupe-gui`: GUI controller plus desktop `egui` prototype shell
 
+## Core responsibilities
+
 The core library owns:
 
 - file walking
-- metadata collection
-- hash calculation
-- grouping
+- metadata and file identity collection
+- exact duplicate grouping
+- partial and full hashing
 - byte verification
-- duplicate report generation
+- similar-name/image/video/audio grouping
+- folder, utility, file-hygiene, and archive-hygiene modes
+- duplicate/similar report generation
+- scan progress and cancellation API
+
+## CLI responsibilities
 
 The CLI owns:
 
 - argument parsing
-- config creation
-- output formatting
+- config/profile/preset resolution
+- cache command dispatch
+- output formatting for human, JSON, and CSV reports
+- action-plan generation/loading/validation/execution
+- manifest restore
+- report database store/list/load commands
 
-Supporting crates own:
+## GUI responsibilities
 
-- cache persistence and cache lookup policy
-- action planning, validation, manifests, and reversible execution
-- similarity and fingerprint helpers for non-exact modes
-- stored report persistence and browsing
-- GUI session state, previews, and report/action orchestration
+The GUI owns:
+
+- serializable session state
+- scan setup controls
+- worker-thread scan orchestration with progress/cancel
+- result view models
+- result filtering and review pruning
+- keeper override for exact-mode reports
+- action-plan setup/execution for exact-mode reports
+- manifest restore
+- report export/import
+- report database refresh/store/load workflows
+- metadata, text/binary, and image previews
+
+## Supporting crate responsibilities
+
+- `dedupe-cache`: cache persistence and lookup/invalidation policy
+- `dedupe-actions`: action planning, validation, manifests, logs, and reversible execution
+- `dedupe-media`: media/image analysis and FFmpeg/ffprobe wrappers
+- `dedupe-report-db`: report JSON persistence and browsing
 
 ## Design rules
 
 ### 1. The GUI must not become the engine
 
-The GUI should call backend APIs and display results. It should not implement separate scan logic.
+The GUI calls backend APIs and displays results. It must not implement separate scan logic.
 
 ### 2. Scan output should be serializable
 
-Scan results should be usable by:
+Scan results are usable by:
 
 - GUI
 - CLI
 - tests
 - external tools
+- report database storage
 - future automation
 
-### 3. Actions should consume reports, not raw UI state
+### 3. Actions consume reports, not raw UI state
 
-Cleanup actions should run from a validated action plan generated from scan results.
+Cleanup actions run from validated action plans generated from exact scan reports.
 
-### 4. Matching engines should be modular
+### 4. Matching engines are modular and explainable
 
 Each engine should report:
 
-- match type
-- confidence or score where applicable
+- match type or engine label
+- confidence/score/hash where applicable
 - exact reason
-- engine-specific metadata
+- engine-specific metadata where available
 - false-positive risk level
 
-### 5. Long-running scans should be resumable and reusable
+### 5. Repeated scans should be reusable
 
-The cache layer should make repeated scans faster and reduce unnecessary rehashing while keeping destructive operations conservative.
+The cache layer reduces unnecessary rehashing/fingerprinting while keeping destructive operations conservative.
 
 ## Data flow
 
 ```text
 ScanConfig
-  ->
-File collection
-  ->
-File identity and metadata
-  ->
-Candidate grouping
-  ->
-Match engine
-  ->
-Duplicate or similar groups
-  ->
-Report
-  ->
-Review UI or CLI output
-  ->
-Action plan
-  ->
-Quarantine, restore, or link action
-  ->
-Action log + undo manifest
+  -> File collection
+  -> File identity and metadata
+  -> Match engine
+  -> Duplicate or similar groups
+  -> ScanReport
+  -> CLI output, GUI review, or report DB storage
+  -> Exact-mode action plan, if requested
+  -> Quarantine, restore, hard-link, or symlink action
+  -> Action log + undo manifest
 ```
 
 ## Threading model
 
-The backend parallelizes expensive read and hash operations where practical. UI frontends should receive progress updates through a progress or event API rather than blocking the main UI thread.
+The backend parallelizes expensive read and hash operations where practical. The GUI runs scans in a worker thread and receives progress events through the controller.
+
+Known limitation: cancellation may not interrupt long-running hash/media operations immediately.
 
 ## Error model
 

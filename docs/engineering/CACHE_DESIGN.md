@@ -1,104 +1,99 @@
 # Cache design
 
-Status: implemented in first conservative form.
+The cache is implemented in `crates/dedupe-cache` as a SQLite database used by exact scans and media/image fingerprint reuse.
 
-The cache makes repeated scans faster without becoming a source of false matches.
+## Goals
 
-## Database
-
-Use SQLite.
-
-Reasons:
-
-- local and portable
-- no server required
-- easy to inspect
-- good enough for large local metadata caches
+- avoid rehashing unchanged files
+- support partial and full hash reuse
+- support image/video/audio fingerprint reuse
+- tolerate small modified-time drift for network/NAS scans when configured
+- reuse entries across renames when platform identity matches
 
 ## Current tables
 
-### files
+The cache currently has two tables.
 
-```sql
-CREATE TABLE files (
-    id INTEGER PRIMARY KEY,
-    path TEXT NOT NULL,
-    canonical_path TEXT,
-    device_id TEXT,
-    inode TEXT,
-    size INTEGER NOT NULL,
-    modified_unix INTEGER,
-    created_unix INTEGER,
-    last_seen_unix INTEGER NOT NULL
-);
-```
+### `files`
 
-### hashes
+| Column | Purpose |
+|---|---|
+| `id` | primary key |
+| `path` | canonical lookup path, unique |
+| `canonical_path` | canonical path copy for compatibility/reporting |
+| `device_id` | optional platform device identifier |
+| `inode` | optional platform inode/file identifier |
+| `size` | file size in bytes |
+| `modified_unix` | modified timestamp used for invalidation |
+| `created_unix` | reserved/legacy timestamp field |
+| `last_seen_unix` | last lookup/store time |
 
-```sql
-CREATE TABLE hashes (
-    file_id INTEGER NOT NULL,
-    algorithm TEXT NOT NULL,
-    scope TEXT NOT NULL,
-    bytes_hashed INTEGER,
-    hash TEXT NOT NULL,
-    created_unix INTEGER NOT NULL,
-    PRIMARY KEY (file_id, algorithm, scope, bytes_hashed),
-    FOREIGN KEY (file_id) REFERENCES files(id)
-);
-```
+### `hashes`
 
-### media_hashes
+| Column | Purpose |
+|---|---|
+| `file_id` | foreign key to `files` |
+| `algorithm` | hash or fingerprint label |
+| `scope` | `partial` or `full` |
+| `bytes_hashed` | prefix length for partial hashes, `0` for full/fingerprint values |
+| `hash` | hash/fingerprint hex string |
+| `created_unix` | cache entry timestamp |
 
-```sql
-CREATE TABLE media_hashes (
-    file_id INTEGER NOT NULL,
-    engine TEXT NOT NULL,
-    algorithm TEXT NOT NULL,
-    parameters_json TEXT NOT NULL,
-    hash TEXT NOT NULL,
-    created_unix INTEGER NOT NULL,
-    PRIMARY KEY (file_id, engine, algorithm, parameters_json),
-    FOREIGN KEY (file_id) REFERENCES files(id)
-);
-```
+Primary key: `(file_id, algorithm, scope, bytes_hashed)`.
 
-### scan_runs
+## Algorithm labels
 
-```sql
-CREATE TABLE scan_runs (
-    id INTEGER PRIMARY KEY,
-    started_unix INTEGER NOT NULL,
-    finished_unix INTEGER,
-    config_json TEXT NOT NULL,
-    status TEXT NOT NULL
-);
-```
+Exact scans use labels from `HashAlgorithm`:
 
-## Cache validity
+- `blake3`
+- `xxh3_128`
+- `sha256`
 
-A cached hash may be reused when:
+Media/image scans store fingerprints in the same `hashes` table with labels such as:
 
-- path matches
-- or a stronger file identity matches where supported
-- size matches
-- modified timestamp matches, if available
-- file has not been marked dirty
+- `image-ahash-8`
+- `image-ahash-16`
+- `image-ahash-8-rot`
+- `video-sampled-fingerprint`
+- `audio-fingerprint`
 
-When uncertain, rehash.
+## Lookup policy
 
-## Network/NAS caution
+A cache lookup matches by:
 
-Some network filesystems may provide unreliable inode/device data or timestamp precision.
+- exact cached canonical path, or matching `(device_id, inode)` when identity is available
+- size
+- algorithm/fingerprint label
+- scope
+- bytes hashed
+- modified time within configured tolerance
 
-The cache should support conservative mode:
+If a matching entry is found, the cached hash/fingerprint is reused. If not, the caller computes and stores a new value.
 
-- rely on path + size + modified time
-- optionally allow small modified-time drift
-- allow user to disable cache per scan
+## CLI cache support
 
-## Cache invalidation rule
+The CLI accepts cache controls only for modes that currently use the cache:
 
-Prefer false negatives over false positives.
+- `exact`
+- `similar-images`
+- `similar-videos`
+- `similar-audio`
 
-It is acceptable to rehash unchanged files sometimes. It is not acceptable to trust stale hashes for changed files.
+Cache controls:
+
+- `--cache`
+- `--no-cache`
+- `--cache-path <path>`
+- `--clear-cache`
+- `--rebuild-cache`
+- `--cache-mtime-tolerance-secs <secs>`
+
+Presets such as `network-tolerant` and `nas-conservative` enable cache behavior and mtime tolerance defaults.
+
+## Current limitations
+
+- no schema version table or migration system yet
+- path and identity lookup can match older identity rows without an explicit ordering policy
+- media/image fingerprints share the generic hash table rather than a richer media-specific schema
+- `u64` sizes/byte counts are stored in SQLite integer fields
+- ignore-pattern handling is not cache-specific and is not applied uniformly to every scan mode

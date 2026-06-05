@@ -10,7 +10,9 @@ The current repository is a review-first backend, CLI, and GUI prototype. It sup
 
 ## Project status
 
-Current stage: **Phase 8 complete through advanced cleanup**
+Current stage: **Phase 11 complete through archive hygiene modes, in first-pass form**
+
+Latest release: **v0.1.0** with Windows CLI and GUI binaries.
 
 Implemented:
 
@@ -48,7 +50,7 @@ Implemented:
 - empty-archive review mode
 - FFmpeg/ffprobe dependency detection for media scans
 - cache-backed video and audio fingerprints
-- ignored file patterns for non-content scans
+- ignored file patterns for duplicate-folder scans
 - zip archive member scanning in exact mode
 - advanced action types for hard-link and symlink replacement
 - report database storage and browsing
@@ -184,11 +186,13 @@ Run similar image matching:
 cargo run --release --bin dedupeforge -- /data/photos --mode similar-images --image-hamming-threshold 12
 ```
 
-Run rotation-aware similar image matching with a larger perceptual hash:
+Run similar image matching with a larger perceptual hash and the experimental rotation-invariant flag:
 
 ```bash
 cargo run --release --bin dedupeforge -- /data/photos --mode similar-images --image-hash-size 16 --image-rotation-invariant
 ```
+
+Note: the flag is currently exposed, but full rotation/flip-aware grouping is still a known backend gap.
 
 Run similar video matching:
 
@@ -346,11 +350,11 @@ Cache notes:
 - `network-tolerant` enables cache plus a `2` second modified-time tolerance
 - CLI flags still override profile and preset defaults
 
-Example profiles are available in [examples/profiles](C:/Users/Shadowed/Documents/New%20project%204/dedupeforge/examples/profiles):
+Example profiles are available in [examples/profiles](examples/profiles):
 
-- [local-fast.json](C:/Users/Shadowed/Documents/New%20project%204/dedupeforge/examples/profiles/local-fast.json)
-- [network-tolerant.json](C:/Users/Shadowed/Documents/New%20project%204/dedupeforge/examples/profiles/network-tolerant.json)
-- [archive-verify.json](C:/Users/Shadowed/Documents/New%20project%204/dedupeforge/examples/profiles/archive-verify.json)
+- [local-fast.json](examples/profiles/local-fast.json)
+- [network-tolerant.json](examples/profiles/network-tolerant.json)
+- [archive-verify.json](examples/profiles/archive-verify.json)
 
 You can load one with:
 
@@ -418,12 +422,12 @@ Current similarity behavior:
 - image similarity is tunable with `--image-hash-size` and `--image-hamming-threshold`
 - image mode can use cache-backed perceptual hashes
 - video and audio modes can use cache-backed fingerprints
-- image mode can use rotation/flip-aware slower matching with `--image-rotation-invariant`
+- `--image-rotation-invariant` is exposed, but full rotation/flip-aware grouping is still pending
 - video and audio modes depend on `ffmpeg` and `ffprobe`, and report a clear dependency error when either is unavailable
 - video and audio matching use `--media-duration-tolerance-secs` to constrain duration drift
 - video and audio matching use `--media-fingerprint-distance-threshold` to reject weak fingerprint matches
 - RAW + JPEG pairs are detected by normalized basename matching
-- ignored noise files can be excluded with `--ignore-pattern`
+- duplicate-folder signatures can exclude ignored noise files with `--ignore-pattern`
 
 Current GUI status:
 
@@ -438,22 +442,30 @@ Current GUI status:
 - the GUI now exposes large-file and bad-extension hygiene review modes
 - the GUI now exposes duplicate-archive-member and empty-archive hygiene review modes
 
-## Planned product modes
+## Product modes
+
+Implemented review modes:
 
 - Exact Duplicates
 - Similar Names
 - Similar Images
 - RAW + JPEG Pairs
 - Similar Videos
-- Similar Music
+- Similar Music/Audio
 - Duplicate Folders
 - Empty Files
 - Empty Folders
-- Broken Files
 - Bad Extensions
 - Large Files
-- Hard Link Finder
-- Archive Scanner
+- Duplicate ZIP Archive Members
+- Empty ZIP Archives
+
+Still planned or incomplete:
+
+- Broken Files
+- Hard Link Finder as a scan mode
+- Archive Scanner beyond ZIP formats such as 7z/rar/tar
+- true rotation/flip-aware image grouping
 
 See [docs/product/ROADMAP.md](docs/product/ROADMAP.md).
 

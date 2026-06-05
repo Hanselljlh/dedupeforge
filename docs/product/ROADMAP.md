@@ -1,8 +1,12 @@
 # Roadmap
 
-## Phase 0: Repository foundation
+Current `main` status: **Phases 0-11 are implemented in first-pass form** and released as `v0.1.0`. The project is now in polish, correctness-hardening, and workflow-improvement mode rather than initial feature scaffolding.
+
+## Phase 0: Repository foundation — complete
 
 Goal: make the project GitHub-ready.
+
+Implemented:
 
 - README
 - project brief
@@ -13,49 +17,49 @@ Goal: make the project GitHub-ready.
 - license files
 - contribution guide
 
-## Phase 1: MVP exact duplicate scanner
+## Phase 1: MVP exact duplicate scanner — complete
 
 Goal: reliable dry-run exact duplicate reports.
 
-Implemented or in progress:
+Implemented:
 
 - recursive scan
 - same-size grouping
 - partial hash prefilter
-- BLAKE3 / XXH3 / SHA-256
+- BLAKE3 / XXH3-128 / SHA-256
 - optional byte verification
 - protected/reference folders
 - human/JSON/CSV output
+- tests for exact grouping, protected keep selection, output shape, path canonicalization, unreadable files, and zero-byte behavior
 
-Exit criteria:
+Exit criteria status:
 
-- unit tests for hash and grouping behavior
-- integration tests with fixture files
-- clear output contract
-- no destructive actions
+- unit and integration tests exist
+- output contracts are exercised by CLI tests
+- scanning is read-only
 
-## Phase 2: Cache and scan profiles
+## Phase 2: Cache and scan profiles — complete
 
 Goal: make repeated large scans practical.
 
 Implemented:
 
-- SQLite cache
+- SQLite cache crate
 - file path and metadata cache records
-- full hash cache
-- partial hash cache
-- cache invalidation on size/mtime/path changes
+- optional device/inode identity reuse
+- full and partial hash cache entries
+- mtime-tolerance invalidation policy
 - scan profile config files
 - named scan presets
 - cache clear/rebuild controls
 
-Exit criteria:
+Exit criteria status:
 
-- repeated scans skip unchanged files
-- cache can be rebuilt safely
-- stale cache entries are not trusted
+- repeated exact scans can skip unchanged files
+- image/video/audio modes can reuse cached fingerprints
+- cache can be cleared or rebuilt safely
 
-## Phase 3: Safe action system
+## Phase 3: Safe action system — complete for exact scans
 
 Goal: allow cleanup without permanent damage.
 
@@ -68,35 +72,40 @@ Implemented:
 - action log
 - restore from manifest
 - protected path enforcement
-- group invariant: never remove all files in a group
+- group invariant: never select every file in a group
+- save/load action plans
+- execution-time hash revalidation
 
-Exit criteria:
+Exit criteria status:
 
 - no action runs without an explicit action plan
-- every action can be audited
+- action planning is exact-mode only
+- every action batch is auditable by manifest and log
 - quarantine move can be reversed
 
-## Phase 4: GUI prototype
+## Phase 4: GUI prototype — complete in prototype form
 
 Goal: AllDup-style review UI backed by the same engine.
 
 Implemented:
 
-- source selection screen
-- scan profile screen
-- result table
-- group details
-- preview panel
-- auto-select rules
-- action queue
+- source selection and scan profile controls
+- progress/cancel controls
+- result table and group details
+- metadata, text/binary, and image preview panel
+- keeper override
+- result filtering and group pruning
+- action queue / action plan controls
+- report export/import
+- report database browse/store/load workflows
 
-Exit criteria:
+Exit criteria status:
 
-- GUI can run exact duplicate scan
-- GUI can load/export scan results
-- GUI does not implement separate scan logic
+- GUI runs backend scans instead of separate scan logic
+- GUI can export and load scan reports
+- GUI can build exact-mode action plans and execute/restore action batches
 
-## Phase 5: Similar filename and folder engines
+## Phase 5: Similar filename and folder engines — complete in first-pass form
 
 Goal: handle non-content workflows.
 
@@ -105,72 +114,70 @@ Implemented:
 - normalized filename matching
 - token matching
 - edit-distance matching
-- folder tree comparison
-- ignored file patterns
+- folder tree comparison based on file names/sizes
+- ignored file patterns for duplicate-folder signatures
 
-Exit criteria:
+Known limitations:
 
-- match reasons are explainable
-- threshold tuning is available
-- false-positive risk is clearly labeled
+- similar-name results remain high risk and review-only
+- duplicate-folder comparison is not a full recursive content-hash equivalence engine
+- ignore patterns are not applied to every scan mode yet
 
-## Phase 6: Similar images
+## Phase 6: Similar images — complete in first-pass form
 
 Goal: photo cleanup workflows.
 
 Implemented:
 
-- perceptual hashing
+- perceptual average hashing
 - selectable hash sizes
 - Hamming distance threshold
-- EXIF date support
+- EXIF date support in reasons
 - RAW + JPEG pair detection
-- optional rotation/flip-aware slower mode
+- cache-backed image hash reuse
 
-Exit criteria:
+Known limitation:
 
-- exact image vs similar image are separate modes
-- cache stores image hashes
-- UI warns about false-positive risk
+- the `--image-rotation-invariant` flag exists, but scan grouping does not yet compare all generated rotation/flip variants. True rotation/flip-aware grouping remains planned.
 
-## Phase 7: Video and audio
+## Phase 7: Video and audio — complete in first-pass form
 
 Goal: large media library cleanup.
 
 Implemented:
 
-- FFmpeg/ffprobe integration
-- sampled video frame hashes
+- FFmpeg/ffprobe dependency detection
+- sampled video frame fingerprints
 - duration tolerance
-- audio fingerprinting
-- music metadata comparison
+- sampled audio fingerprints
+- music metadata comparison in reasons
+- cache-backed video/audio fingerprints
 
-Exit criteria:
+Known limitations:
 
-- external dependency detection is clear
-- long-running scans are resumable or cacheable
-- match reasons show duration/hash/fingerprint basis
+- fingerprints are cryptographic hashes of sampled output, not mature perceptual fingerprints
+- long-running media tool calls do not yet have robust timeout controls
 
-## Phase 8: Advanced cleanup features
+## Phase 8: Advanced cleanup features — complete in first-pass form
 
 Goal: power-user cleanup options.
 
 Implemented:
 
-- hard link replacement
-- symlink replacement
-- archive scanning
-- NAS/network conservative mode
-- scheduled scan reports via recurring report-database runs
-- result database browser
+- hard-link replacement action
+- symlink replacement action
+- ZIP archive scanning
+- NAS-conservative preset
+- scheduler-friendly report database workflow
+- result database browser/storage for CLI and GUI
 
-Exit criteria:
+Known limitations:
 
-- advanced features are disabled by default
-- filesystem limitations are detected before action
-- every advanced action is logged
+- advanced actions are opt-in and exact-mode only
+- archive support is ZIP-only
+- no built-in scheduler exists; the report DB workflow is suitable for external schedulers
 
-## Phase 9: Utility review modes
+## Phase 9: Utility review modes — complete
 
 Goal: cover common library-hygiene and photo-workflow review tasks.
 
@@ -180,38 +187,56 @@ Implemented:
 - empty file review mode
 - empty folder review mode
 
-Exit criteria:
+Exit criteria status:
 
-- utility modes reuse the shared scan/report pipeline
-- CLI and GUI expose the same new modes
-- low-risk utility modes are labeled clearly in results
+- modes reuse the shared scan/report pipeline
+- CLI and GUI expose the modes
+- risk labels are included in results
 
-## Phase 10: File hygiene modes
+## Phase 10: File hygiene modes — complete
 
-Goal: help users clean up non-duplicate library problems with the same review-first workflow.
+Goal: help users clean non-duplicate library problems with the same review-first workflow.
 
 Implemented:
 
 - large-file review mode
 - bad-extension detection mode
 
-Exit criteria:
+Exit criteria status:
 
-- hygiene modes reuse the shared scan/report pipeline
-- CLI and GUI expose the same new modes
-- risk labels explain which hygiene modes are low-risk vs medium-risk
+- modes reuse the shared scan/report pipeline
+- CLI and GUI expose the modes
+- risk labels distinguish low- and medium-risk results
 
-## Phase 11: Archive hygiene modes
+## Phase 11: Archive hygiene modes — complete for ZIP
 
 Goal: make archive cleanup and archive inspection first-class review workflows.
 
 Implemented:
 
-- duplicate archive-member review mode
-- empty-archive review mode
+- duplicate archive-member review mode for ZIP files
+- empty-archive review mode for ZIP files
+- exact-mode `--scan-archives` support for ZIP members
 
-Exit criteria:
+Exit criteria status:
 
 - archive-focused review modes reuse the shared scan/report pipeline
-- CLI and GUI expose the same new modes
-- archive inspection stays non-actionable by default
+- CLI and GUI expose the modes
+- archive members are treated as review/non-actionable pseudo-items
+
+Known limitations:
+
+- only `.zip` archives are supported
+- resource limits for very large archives and zip bombs are not implemented yet
+
+## Current next work
+
+Recommended next milestones:
+
+1. **docs-and-status-cleanup** — keep planning docs synchronized with implemented code and release state.
+2. **image-rotation-correctness** — make rotation/flip-aware image grouping actually compare generated variants, or remove/rename the flag.
+3. **archive-safety-v2** — add resource limits, streaming where possible, and support for more archive formats.
+4. **media-fingerprint-v2** — replace sampled-output cryptographic hashes with more robust perceptual/audio fingerprinting.
+5. **hard-link-finder-mode** — add hard-link identity review as a scan mode, separate from hard-link replacement action.
+6. **broken-file-mode** — detect corrupt/unreadable media and document review semantics.
+7. **release-polish** — formalize changelog entries, release notes, and CI status for each published version.
