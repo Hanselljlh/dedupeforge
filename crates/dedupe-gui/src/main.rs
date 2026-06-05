@@ -421,16 +421,17 @@ impl eframe::App for DedupeForgeApp {
                 ui.heading("Scan Setup");
                 ui.add_space(8.0);
 
-                let profile = &mut self.controller.state_mut().profile;
+                {
+                    let profile = &mut self.controller.state_mut().profile;
 
-                ui.label("Profile Name");
-                ui.text_edit_singleline(&mut profile.name);
+                    ui.label("Profile Name");
+                    ui.text_edit_singleline(&mut profile.name);
 
-                ui.add_space(8.0);
-                ui.label("Scan Mode");
-                egui::ComboBox::from_id_salt("scan_mode")
-                    .selected_text(scan_mode_label(profile.mode))
-                    .show_ui(ui, |ui| {
+                    ui.add_space(8.0);
+                    ui.label("Scan Mode");
+                    egui::ComboBox::from_id_salt("scan_mode")
+                        .selected_text(scan_mode_label(profile.mode))
+                        .show_ui(ui, |ui| {
                         ui.selectable_value(&mut profile.mode, ScanMode::Exact, "Exact duplicates");
                         ui.selectable_value(
                             &mut profile.mode,
@@ -492,7 +493,8 @@ impl eframe::App for DedupeForgeApp {
                             ScanMode::EmptyArchives,
                             "Empty archives",
                         );
-                    });
+                        });
+                }
 
                 ui.add_space(8.0);
                 ui.label("Source Paths");
@@ -532,6 +534,7 @@ impl eframe::App for DedupeForgeApp {
                         .hint_text("Examples: *.tmp\nThumbs.db"),
                 );
 
+                    let profile = &mut self.controller.state_mut().profile;
                     ui.checkbox(&mut profile.ignore_hidden, "Ignore hidden files");
                     ui.checkbox(&mut profile.byte_verify, "Byte verify exact matches");
                     ui.checkbox(
