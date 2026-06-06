@@ -1395,8 +1395,9 @@ mod tests {
 
         fs::remove_file(root.join("copy.txt")).unwrap();
         fs::write(root.join("copy.txt"), b"other").unwrap();
-        let restored = restore_from_manifest(&manifest, &manifest.quarantine_root.join("manifest.json"))
-            .unwrap();
+        let restored =
+            restore_from_manifest(&manifest, &manifest.quarantine_root.join("manifest.json"))
+                .unwrap();
 
         assert_eq!(restored.items[0].status, "failed");
         assert!(restored.items[0]
