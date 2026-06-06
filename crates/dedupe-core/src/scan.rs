@@ -930,7 +930,7 @@ fn collect_zip_members(
 
     let mut total_uncompressed = 0u64;
     for index in 0..archive.len() {
-        let mut member = archive.by_index(index)?;
+        let member = archive.by_index(index)?;
         if !member.is_file() {
             continue;
         }
