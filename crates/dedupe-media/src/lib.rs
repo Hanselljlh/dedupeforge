@@ -503,7 +503,10 @@ mod tests {
 
         let analysis = analyze_image(&file, 8, true).unwrap();
         assert!(!analysis.perceptual_hash_hex.is_empty());
-        assert_eq!(analysis.perceptual_hashes_hex[0], analysis.perceptual_hash_hex);
+        assert_eq!(
+            analysis.perceptual_hashes_hex[0],
+            analysis.perceptual_hash_hex
+        );
         assert!(analysis.transform_count >= 1);
 
         let _ = fs::remove_dir_all(root);

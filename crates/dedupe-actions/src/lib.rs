@@ -718,9 +718,8 @@ fn verify_replacement_link(item: &ActionManifestItem) -> Result<()> {
     })?;
 
     if metadata.file_type().is_symlink() {
-        let link_target = fs::read_link(&item.original_path).with_context(|| {
-            format!("failed to read symlink {}", item.original_path.display())
-        })?;
+        let link_target = fs::read_link(&item.original_path)
+            .with_context(|| format!("failed to read symlink {}", item.original_path.display()))?;
         if link_target == *target || canonical_paths_match(&link_target, target) {
             return Ok(());
         }
@@ -1334,9 +1333,27 @@ mod tests {
                 hash: hash_bytes(b"same", HashAlgorithm::Blake3).unwrap(),
                 reason: "same size + same full hash".to_string(),
                 items: vec![
-                    DuplicateItem { path: root.join("keep.txt"), size: 4, modified_unix: Some(1), is_protected: false, suggested_keep: true },
-                    DuplicateItem { path: left.clone(), size: 4, modified_unix: Some(2), is_protected: false, suggested_keep: false },
-                    DuplicateItem { path: right.clone(), size: 4, modified_unix: Some(3), is_protected: false, suggested_keep: false },
+                    DuplicateItem {
+                        path: root.join("keep.txt"),
+                        size: 4,
+                        modified_unix: Some(1),
+                        is_protected: false,
+                        suggested_keep: true,
+                    },
+                    DuplicateItem {
+                        path: left.clone(),
+                        size: 4,
+                        modified_unix: Some(2),
+                        is_protected: false,
+                        suggested_keep: false,
+                    },
+                    DuplicateItem {
+                        path: right.clone(),
+                        size: 4,
+                        modified_unix: Some(3),
+                        is_protected: false,
+                        suggested_keep: false,
+                    },
                 ],
             }],
             errors: vec![],
@@ -1347,7 +1364,10 @@ mod tests {
         let manifest = execute_quarantine_plan(&plan, &quarantine_root).unwrap();
 
         assert_eq!(manifest.items.len(), 2);
-        assert_ne!(manifest.items[0].quarantine_path, manifest.items[1].quarantine_path);
+        assert_ne!(
+            manifest.items[0].quarantine_path,
+            manifest.items[1].quarantine_path
+        );
         assert!(manifest.items[0].quarantine_path.exists());
         assert!(manifest.items[1].quarantine_path.exists());
 
@@ -1365,12 +1385,18 @@ mod tests {
         let mut report = sample_report();
         report.duplicate_groups[0].items[0].path = root.join("keep.txt");
         report.duplicate_groups[0].items[1].path = root.join("copy.txt");
-        let plan = build_dry_run_plan(&report, SelectionRule::KeepSuggested, ActionKind::HardlinkReplace).unwrap();
+        let plan = build_dry_run_plan(
+            &report,
+            SelectionRule::KeepSuggested,
+            ActionKind::HardlinkReplace,
+        )
+        .unwrap();
         let manifest = execute_quarantine_plan(&plan, &quarantine_root).unwrap();
 
         fs::remove_file(root.join("copy.txt")).unwrap();
         fs::write(root.join("copy.txt"), b"other").unwrap();
-        let err = restore_from_manifest(&manifest, &manifest.quarantine_root.join("manifest.json")).unwrap_err();
+        let err = restore_from_manifest(&manifest, &manifest.quarantine_root.join("manifest.json"))
+            .unwrap_err();
 
         assert!(err.to_string().contains("not a verified link"));
         assert_eq!(fs::read(root.join("copy.txt")).unwrap(), b"other");
@@ -1378,5 +1404,4 @@ mod tests {
 
         let _ = fs::remove_dir_all(root);
     }
-
 }

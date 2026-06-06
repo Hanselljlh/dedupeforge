@@ -1696,7 +1696,10 @@ mod tests {
             exif_date: None,
         };
 
-        assert_eq!(best_image_hash_distance(&left_record, &right_record), Some(0));
+        assert_eq!(
+            best_image_hash_distance(&left_record, &right_record),
+            Some(0)
+        );
     }
 
     #[test]
