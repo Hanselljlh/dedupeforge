@@ -1395,10 +1395,15 @@ mod tests {
 
         fs::remove_file(root.join("copy.txt")).unwrap();
         fs::write(root.join("copy.txt"), b"other").unwrap();
-        let err = restore_from_manifest(&manifest, &manifest.quarantine_root.join("manifest.json"))
-            .unwrap_err();
+        let restored = restore_from_manifest(&manifest, &manifest.quarantine_root.join("manifest.json"))
+            .unwrap();
 
-        assert!(err.to_string().contains("not a verified link"));
+        assert_eq!(restored.items[0].status, "failed");
+        assert!(restored.items[0]
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("not a verified link"));
         assert_eq!(fs::read(root.join("copy.txt")).unwrap(), b"other");
         assert!(manifest.items[0].quarantine_path.exists());
 
