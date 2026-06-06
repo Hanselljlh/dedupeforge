@@ -909,6 +909,10 @@ fn count_zip_archives(roots: &[PathBuf]) -> usize {
         .count()
 }
 
+const MAX_ARCHIVE_MEMBERS: usize = 10_000;
+const MAX_ARCHIVE_MEMBER_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_ARCHIVE_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
 fn collect_zip_members(
     archive_path: &Path,
     config: &ScanConfig,
@@ -916,20 +920,52 @@ fn collect_zip_members(
 ) -> Result<()> {
     let file = std::fs::File::open(archive_path)?;
     let mut archive = zip::ZipArchive::new(file)?;
+    if archive.len() > MAX_ARCHIVE_MEMBERS {
+        anyhow::bail!(
+            "zip archive has {} members, above safety limit {}",
+            archive.len(),
+            MAX_ARCHIVE_MEMBERS
+        );
+    }
+
+    let mut total_uncompressed = 0u64;
     for index in 0..archive.len() {
-        let mut member = archive.by_index(index)?;
+        let member = archive.by_index(index)?;
         if !member.is_file() {
             continue;
         }
         let size = member.size();
+        let member_name = member.name().to_string();
+        if size > MAX_ARCHIVE_MEMBER_BYTES {
+            anyhow::bail!(
+                "zip member {} is {} bytes, above safety limit {}",
+                member_name,
+                size,
+                MAX_ARCHIVE_MEMBER_BYTES
+            );
+        }
+        total_uncompressed = total_uncompressed.saturating_add(size);
+        if total_uncompressed > MAX_ARCHIVE_TOTAL_BYTES {
+            anyhow::bail!(
+                "zip archive total uncompressed size exceeds safety limit {}",
+                MAX_ARCHIVE_TOTAL_BYTES
+            );
+        }
         if size < config.min_size {
             continue;
         }
         let mut bytes = Vec::new();
         use std::io::Read;
-        member.read_to_end(&mut bytes)?;
+        let mut limited = member.take(MAX_ARCHIVE_MEMBER_BYTES + 1);
+        limited.read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_ARCHIVE_MEMBER_BYTES {
+            anyhow::bail!(
+                "zip member exceeded safety limit while reading: {} bytes",
+                MAX_ARCHIVE_MEMBER_BYTES
+            );
+        }
         let hash = hash_bytes(&bytes, config.algorithm)?;
-        let pseudo_path = PathBuf::from(format!("{}!{}", archive_path.display(), member.name()));
+        let pseudo_path = PathBuf::from(format!("{}!{}", archive_path.display(), member_name));
         by_hash
             .entry((size, hash.clone()))
             .or_default()
@@ -1513,6 +1549,50 @@ mod tests {
             .flat_map(|group| group.items.iter())
             .any(|item| item.is_protected));
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn archive_scan_rejects_too_many_members() {
+        let root = temp_dir("archive-limit");
+        let archive_path = root.join("many.zip");
+        let file = fs::File::create(&archive_path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        for index in 0..=MAX_ARCHIVE_MEMBERS {
+            zip.start_file(format!("{index}.txt"), options).unwrap();
+            zip.write_all(b"x").unwrap();
+        }
+        zip.finish().unwrap();
+
+        let config = ScanConfig {
+            mode: ScanMode::DuplicateArchiveMembers,
+            paths: vec![root.clone()],
+            protected_roots: Vec::new(),
+            algorithm: HashAlgorithm::Blake3,
+            partial_bytes: 4,
+            min_size: 1,
+            ignore_hidden: true,
+            byte_verify: false,
+            cache: CacheConfig {
+                enabled: false,
+                path: None,
+                modified_time_tolerance_secs: 0,
+            },
+            name_similarity_threshold: 85,
+            folder_similarity_threshold: 85,
+            image_hash_size: 8,
+            image_hamming_threshold: 12,
+            image_rotation_invariant: false,
+            media_duration_tolerance_secs: 2.0,
+            media_fingerprint_distance_threshold: 32,
+            scan_archives: true,
+            ignore_patterns: Vec::new(),
+        };
+        let mut by_hash = HashMap::new();
+        let err = collect_zip_members(&archive_path, &config, &mut by_hash).unwrap_err();
+
+        assert!(err.to_string().contains("above safety limit"));
         let _ = fs::remove_dir_all(root);
     }
 

@@ -3,6 +3,7 @@ use dedupe_core::{
     hash::hash_file, DuplicateGroup, DuplicateItem, HashAlgorithm, ScanMode, ScanReport,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -169,9 +170,14 @@ pub fn execute_quarantine_plan(
     validate_execution_environment(plan, &batch_root)?;
 
     let mut manifest_items = Vec::new();
-    for item in &plan.items {
-        let encoded_name = encode_path_for_quarantine(&item.path);
-        let destination = files_root.join(encoded_name);
+    let mut reserved_destinations = HashSet::new();
+    for (item_index, item) in plan.items.iter().enumerate() {
+        let destination = unique_quarantine_destination(
+            &files_root,
+            item,
+            item_index,
+            &mut reserved_destinations,
+        );
 
         let manifest_item = match execute_action_item(item, &destination) {
             Ok(()) => ActionManifestItem {
@@ -674,6 +680,91 @@ fn replace_with_link(item: &ActionItem, destination: &Path, kind: LinkKind) -> R
     Ok(())
 }
 
+fn unique_quarantine_destination(
+    files_root: &Path,
+    item: &ActionItem,
+    item_index: usize,
+    reserved: &mut HashSet<PathBuf>,
+) -> PathBuf {
+    let encoded_name = encode_path_for_quarantine(&item.path);
+    let mut candidate = files_root.join(&encoded_name);
+    if reserved.insert(candidate.clone()) && !candidate.exists() {
+        return candidate;
+    }
+
+    for suffix in 1usize.. {
+        candidate = files_root.join(format!(
+            "{encoded_name}--{}--{item_index:04}--{suffix}",
+            item.group_id
+        ));
+        if reserved.insert(candidate.clone()) && !candidate.exists() {
+            return candidate;
+        }
+    }
+
+    unreachable!("unbounded quarantine destination suffix search should always return")
+}
+
+fn verify_replacement_link(item: &ActionManifestItem) -> Result<()> {
+    let target = item
+        .replacement_target
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("replacement target is required for link restore"))?;
+    let metadata = fs::symlink_metadata(&item.original_path).with_context(|| {
+        format!(
+            "failed to inspect restore placeholder {}",
+            item.original_path.display()
+        )
+    })?;
+
+    if metadata.file_type().is_symlink() {
+        let link_target = fs::read_link(&item.original_path)
+            .with_context(|| format!("failed to read symlink {}", item.original_path.display()))?;
+        if link_target == *target || canonical_paths_match(&link_target, target) {
+            return Ok(());
+        }
+        bail!(
+            "restore placeholder {} is a symlink to {}, not expected target {}",
+            item.original_path.display(),
+            link_target.display(),
+            target.display()
+        );
+    }
+
+    if metadata.is_file() && same_file_identity(&item.original_path, target)? {
+        return Ok(());
+    }
+
+    bail!(
+        "restore placeholder {} is not a verified link to {}",
+        item.original_path.display(),
+        target.display()
+    )
+}
+
+fn canonical_paths_match(left: &Path, right: &Path) -> bool {
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+#[cfg(unix)]
+fn same_file_identity(left: &Path, right: &Path) -> Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+
+    let left_metadata = fs::metadata(left)?;
+    let right_metadata = fs::metadata(right)?;
+    Ok(left_metadata.dev() == right_metadata.dev() && left_metadata.ino() == right_metadata.ino())
+}
+
+#[cfg(windows)]
+fn same_file_identity(left: &Path, right: &Path) -> Result<bool> {
+    let left = fs::canonicalize(left)?;
+    let right = fs::canonicalize(right)?;
+    Ok(left == right)
+}
+
 fn restore_item(item: &ActionManifestItem) -> Result<()> {
     if item.status != "completed" && item.status != "restored" {
         bail!(
@@ -690,6 +781,7 @@ fn restore_item(item: &ActionManifestItem) -> Result<()> {
     }
     if item.original_path.exists() {
         if item.replacement_target.is_some() {
+            verify_replacement_link(item)?;
             remove_link_or_file(&item.original_path)?;
         } else {
             bail!(
@@ -1214,6 +1306,107 @@ mod tests {
             .contains("action plan execution revalidation failed"));
         assert!(err.to_string().contains("replacement target"));
         assert!(root.join("copy.txt").exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn quarantine_destinations_are_unique_when_encoded_paths_collide() {
+        let root = std::env::temp_dir().join(format!("dedupe-actions-collide-{}", unix_now()));
+        let quarantine_root = root.join(".quarantine");
+        let left = root.join("a/b.txt");
+        let right = root.join("a_b.txt");
+        fs::create_dir_all(left.parent().unwrap()).unwrap();
+        fs::write(root.join("keep.txt"), b"same").unwrap();
+        fs::write(&left, b"same").unwrap();
+        fs::write(&right, b"same").unwrap();
+
+        let report = ScanReport {
+            mode: ScanMode::Exact,
+            scanned_files: 3,
+            candidate_size_groups: 1,
+            cache_hits: 0,
+            cache_misses: 3,
+            duplicate_groups: vec![DuplicateGroup {
+                size: 4,
+                algorithm: "blake3".to_string(),
+                hash: hash_bytes(b"same", HashAlgorithm::Blake3).unwrap(),
+                reason: "same size + same full hash".to_string(),
+                items: vec![
+                    DuplicateItem {
+                        path: root.join("keep.txt"),
+                        size: 4,
+                        modified_unix: Some(1),
+                        is_protected: false,
+                        suggested_keep: true,
+                    },
+                    DuplicateItem {
+                        path: left.clone(),
+                        size: 4,
+                        modified_unix: Some(2),
+                        is_protected: false,
+                        suggested_keep: false,
+                    },
+                    DuplicateItem {
+                        path: right.clone(),
+                        size: 4,
+                        modified_unix: Some(3),
+                        is_protected: false,
+                        suggested_keep: false,
+                    },
+                ],
+            }],
+            errors: vec![],
+            risk: MatchRisk::Low,
+        };
+
+        let plan = build_dry_run_quarantine_plan(&report, SelectionRule::KeepSuggested).unwrap();
+        let manifest = execute_quarantine_plan(&plan, &quarantine_root).unwrap();
+
+        assert_eq!(manifest.items.len(), 2);
+        assert_ne!(
+            manifest.items[0].quarantine_path,
+            manifest.items[1].quarantine_path
+        );
+        assert!(manifest.items[0].quarantine_path.exists());
+        assert!(manifest.items[1].quarantine_path.exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn restore_rejects_unverified_link_placeholder() {
+        let root = std::env::temp_dir().join(format!("dedupe-actions-link-verify-{}", unix_now()));
+        let quarantine_root = root.join(".quarantine");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("keep.txt"), b"same").unwrap();
+        fs::write(root.join("copy.txt"), b"same").unwrap();
+
+        let mut report = sample_report();
+        report.duplicate_groups[0].items[0].path = root.join("keep.txt");
+        report.duplicate_groups[0].items[1].path = root.join("copy.txt");
+        let plan = build_dry_run_plan(
+            &report,
+            SelectionRule::KeepSuggested,
+            ActionKind::HardlinkReplace,
+        )
+        .unwrap();
+        let manifest = execute_quarantine_plan(&plan, &quarantine_root).unwrap();
+
+        fs::remove_file(root.join("copy.txt")).unwrap();
+        fs::write(root.join("copy.txt"), b"other").unwrap();
+        let restored =
+            restore_from_manifest(&manifest, &manifest.quarantine_root.join("manifest.json"))
+                .unwrap();
+
+        assert_eq!(restored.items[0].status, "failed");
+        assert!(restored.items[0]
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("not a verified link"));
+        assert_eq!(fs::read(root.join("copy.txt")).unwrap(), b"other");
+        assert!(manifest.items[0].quarantine_path.exists());
 
         let _ = fs::remove_dir_all(root);
     }

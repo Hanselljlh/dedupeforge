@@ -449,8 +449,7 @@ fn group_similar_image_files(
                 continue;
             };
 
-            let Ok(distance) = compare_hashes_hex(&left_record.hash_hex, &right_record.hash_hex)
-            else {
+            let Some(distance) = best_image_hash_distance(left_record, right_record) else {
                 continue;
             };
             if distance <= config.image_hamming_threshold {
@@ -817,7 +816,7 @@ fn file_stem_like(path: &Path) -> String {
 
 #[derive(Clone, Debug)]
 struct ImageRecord {
-    hash_hex: String,
+    hashes_hex: Vec<String>,
     exif_date: Option<String>,
 }
 
@@ -956,7 +955,7 @@ fn image_record(
         )? {
             *cache_hits += 1;
             return Ok(ImageRecord {
-                hash_hex: found.hash,
+                hashes_hex: parse_cached_image_hashes(&found.hash),
                 exif_date: read_exif_date(&file.path).ok().flatten(),
             });
         }
@@ -977,14 +976,35 @@ fn image_record(
                 algorithm: &algorithm_label,
                 scope: HashScope::Full,
             },
-            &analysis.perceptual_hash_hex,
+            &analysis.perceptual_hashes_hex.join(";"),
         )?;
     }
     *cache_misses += 1;
     Ok(ImageRecord {
-        hash_hex: analysis.perceptual_hash_hex,
+        hashes_hex: analysis.perceptual_hashes_hex,
         exif_date: analysis.exif_date,
     })
+}
+
+fn best_image_hash_distance(left: &ImageRecord, right: &ImageRecord) -> Option<u32> {
+    let mut best = None;
+    for left_hash in &left.hashes_hex {
+        for right_hash in &right.hashes_hex {
+            let Ok(distance) = compare_hashes_hex(left_hash, right_hash) else {
+                continue;
+            };
+            best = Some(best.map_or(distance, |current: u32| current.min(distance)));
+        }
+    }
+    best
+}
+
+fn parse_cached_image_hashes(value: &str) -> Vec<String> {
+    value
+        .split(';')
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn video_record(
@@ -1663,6 +1683,23 @@ mod tests {
             .contains("perceptual hash distance"));
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn similar_image_scan_uses_rotation_invariant_hash_variants() {
+        let left_record = ImageRecord {
+            hashes_hex: vec!["00".to_string(), "ff".to_string()],
+            exif_date: None,
+        };
+        let right_record = ImageRecord {
+            hashes_hex: vec!["0f".to_string(), "ff".to_string()],
+            exif_date: None,
+        };
+
+        assert_eq!(
+            best_image_hash_distance(&left_record, &right_record),
+            Some(0)
+        );
     }
 
     #[test]
