@@ -18,4 +18,6 @@ xxhash-rust.workspace = true
 zip.workspace = true
 
 [dev-dependencies]
+csv.workspace = true
 image.workspace = true
+serde_json.workspace = true

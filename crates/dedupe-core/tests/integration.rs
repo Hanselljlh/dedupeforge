@@ -278,3 +278,31 @@ fn empty_archive_mode_finds_archives_without_file_members() {
 
     let _ = fs::remove_dir_all(dir);
 }
+
+#[cfg(unix)]
+#[test]
+fn unreadable_file_error_is_captured_in_report() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = temp_dir("unreadable");
+    write(&dir, "readable_a.txt", b"same content here");
+    write(&dir, "readable_b.txt", b"same content here");
+    let unreadable = dir.join("unreadable.txt");
+    fs::write(&unreadable, b"same content here").unwrap();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+
+    let report = scan_exact(&base_config(vec![dir.clone()])).unwrap();
+
+    // Restore before cleanup so remove_dir_all works
+    let _ = fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o644));
+    let _ = fs::remove_dir_all(dir);
+
+    // The two readable duplicates must still be found
+    assert_eq!(report.duplicate_groups.len(), 1, "readable duplicates must still be grouped");
+    // The unreadable file must surface in errors, not silently vanish
+    assert!(!report.errors.is_empty(), "unreadable file must produce an error entry");
+    assert!(
+        report.errors.iter().any(|e| e.contains("unreadable.txt")),
+        "error entry must name the unreadable file"
+    );
+}
